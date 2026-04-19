@@ -639,11 +639,16 @@ function renderLessons(): string {
 function render(focusTarget?: string): void {
   const summary = measurementSummary(state.vulnerableSamples);
   const patchedSummary = measurementSummary(state.patchedSamples);
+  const activeAction =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest<HTMLElement>('[data-action]')?.dataset.action
+      : undefined;
+  const nextFocusTarget = focusTarget ?? activeAction;
 
   app.innerHTML = `
     <a class="skip-link" href="#main-content">Skip to main content</a>
     <main id="main-content" class="lab-shell" tabindex="-1">
-      <div class="sr-only" aria-live="polite">${escapeHtml(state.statusMessage)}</div>
+      <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.statusMessage)}</div>
       <header class="topbar">
         <div>
           <p class="topbar-label">Educational side-channel lab</p>
@@ -668,8 +673,8 @@ function render(focusTarget?: string): void {
       </footer>
     </main>`;
 
-  if (focusTarget) {
-    const focusElement = app.querySelector<HTMLElement>(`[data-action="${focusTarget}"]`);
+  if (nextFocusTarget) {
+    const focusElement = app.querySelector<HTMLElement>(`[data-action="${nextFocusTarget}"]`);
     if (focusElement && !focusElement.hasAttribute('disabled')) {
       focusElement.focus();
     }

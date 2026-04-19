@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "verify:phase1": "tsx scripts/verify-phase1.ts",
     "verify:phase2": "tsx scripts/verify-phase2.ts",
-    "verify:phase3": "tsx scripts/verify-phase3.ts"
+    "verify:phase3": "tsx scripts/verify-phase3.ts",
+    "verify:phase7": "tsx scripts/verify-phase7.ts"
   },
   "devDependencies": {
     "tsx": "^4.21.0",

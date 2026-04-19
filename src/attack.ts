@@ -17,6 +17,14 @@ function createTimingProfile(): Map<number, number[]> {
   return new Map(PROBE_VALUES.map((probe) => [probe, []]));
 }
 
+function initializeAttackState(state: AttackState): AttackState {
+  stateMetadata.set(state, {
+    recovered: new Int16Array(state.targetKey.coeffs.length),
+  });
+
+  return state;
+}
+
 function collapseCoefficient(value: number): -1 | 0 | 1 {
   if (value > 0) {
     return 1;
@@ -112,6 +120,26 @@ export interface AttackState {
   totalBits: number;
   timingProfile: Map<number, number[]>;
   currentCoefficient: number;
+}
+
+export function createAttackState(secretKey: SecretKey): AttackState {
+  return initializeAttackState({
+    targetKey: secretKey,
+    queries: 0,
+    recoveredBits: 0,
+    totalBits: secretKey.coeffs.length * 2,
+    timingProfile: createTimingProfile(),
+    currentCoefficient: 0,
+  });
+}
+
+export function recoveredKeyFromState(state: AttackState): SecretKey | null {
+  const metadata = stateMetadata.get(state);
+  if (!metadata || state.currentCoefficient !== state.targetKey.coeffs.length) {
+    return null;
+  }
+
+  return { coeffs: new Int16Array(metadata.recovered) };
 }
 
 /**
@@ -244,18 +272,7 @@ export async function runAttack(
   matches: boolean;
   elapsedSimulatedTime: number;
 }> {
-  const state: AttackState = {
-    targetKey: secretKey,
-    queries: 0,
-    recoveredBits: 0,
-    totalBits: secretKey.coeffs.length * 2,
-    timingProfile: createTimingProfile(),
-    currentCoefficient: 0,
-  };
-
-  stateMetadata.set(state, {
-    recovered: new Int16Array(secretKey.coeffs.length),
-  });
+  const state = createAttackState(secretKey);
 
   while (state.queries < maxQueries && state.currentCoefficient < secretKey.coeffs.length) {
     const result = attackIteration(state, vulnerableImplementation);
@@ -278,10 +295,7 @@ export async function runAttack(
     throw new Error('attack state metadata missing at completion');
   }
 
-  const recoveredKey =
-    vulnerableImplementation && state.currentCoefficient === secretKey.coeffs.length
-      ? { coeffs: new Int16Array(metadata.recovered) }
-      : null;
+  const recoveredKey = vulnerableImplementation ? recoveredKeyFromState(state) : null;
 
   const matches =
     recoveredKey !== null &&

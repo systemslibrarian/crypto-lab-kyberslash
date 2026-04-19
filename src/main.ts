@@ -44,6 +44,7 @@ interface AppState {
   attackState: AttackState;
   attackQueryTimes: number[];
   attackEvents: RecoveryEvent[];
+  statusMessage: string;
 }
 
 const QUOTE = '"Whether therefore ye eat, or drink, or whatsoever ye do, do all to the glory of God."';
@@ -134,6 +135,7 @@ const state: AppState = {
   attackState: createAttackState(initialSecret),
   attackQueryTimes: [],
   attackEvents: [],
+  statusMessage: 'KyberSlash lab ready. Initial timing traces loaded.',
 };
 
 function escapeHtml(value: string): string {
@@ -149,6 +151,11 @@ function setTheme(theme: ThemeMode): void {
   state.theme = theme;
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem('theme', theme);
+  state.statusMessage = `Theme changed to ${theme} mode.`;
+}
+
+function setStatusMessage(message: string): void {
+  state.statusMessage = message;
 }
 
 function formatInteger(value: number): string {
@@ -191,12 +198,13 @@ function recordMeasurement(): void {
   state.patchedSamples = trimTrace([...state.patchedSamples, patched]);
 }
 
-async function runMeasurementBatch(count: number): Promise<void> {
+async function runMeasurementBatch(count: number, completionFocusTarget: string): Promise<void> {
   if (state.measuring) {
     return;
   }
 
   state.measuring = true;
+  setStatusMessage(`Running ${count} simulated timing measurement${count === 1 ? '' : 's'}.`);
   render();
 
   for (let index = 0; index < count; index += 1) {
@@ -208,12 +216,15 @@ async function runMeasurementBatch(count: number): Promise<void> {
   }
 
   state.measuring = false;
-  render();
+  setStatusMessage(`Completed ${count} simulated timing measurement${count === 1 ? '' : 's'}.`);
+  render(completionFocusTarget);
 }
 
 function createPolyline(values: number[], tone: 'danger' | 'safe'): string {
+  const label = tone === 'danger' ? 'Vulnerable implementation timing trace' : 'Patched implementation timing trace';
+
   if (values.length === 0) {
-    return `<svg viewBox="0 0 100 40" class="trace-svg"><line x1="0" y1="20" x2="100" y2="20" class="trace-line trace-line--${tone}" /></svg>`;
+    return `<svg viewBox="0 0 100 40" class="trace-svg" role="img" aria-label="${label}"><line x1="0" y1="20" x2="100" y2="20" class="trace-line trace-line--${tone}" /></svg>`;
   }
 
   const minimum = Math.min(...values);
@@ -227,7 +238,7 @@ function createPolyline(values: number[], tone: 'danger' | 'safe'): string {
     })
     .join(' ');
 
-  return `<svg viewBox="0 0 100 40" class="trace-svg"><polyline points="${points}" class="trace-line trace-line--${tone}" /></svg>`;
+  return `<svg viewBox="0 0 100 40" class="trace-svg" role="img" aria-label="${label}"><polyline points="${points}" class="trace-line trace-line--${tone}" /></svg>`;
 }
 
 function histogram(values: number[], bins: number): number[] {
@@ -281,6 +292,7 @@ function resetAttack(mode: AttackMode = state.attackMode): void {
   state.attackState = createAttackState(state.attackSecret);
   state.attackQueryTimes = [];
   state.attackEvents = [];
+  setStatusMessage(`Attack mode set to ${mode === 'vulnerable' ? 'vulnerable implementation' : 'patched implementation'}.`);
 }
 
 function pushAttackEvent(coefficient: number, value: number): void {
@@ -304,7 +316,8 @@ async function startAttack(): Promise<void> {
   state.attackRunning = true;
   state.attackStopRequested = false;
   const runId = state.attackRunId;
-  render();
+  setStatusMessage(`Launching ${state.attackMode === 'vulnerable' ? 'vulnerable' : 'patched'} attack simulation.`);
+  render('stop-attack');
 
   while (
     !state.attackStopRequested &&
@@ -336,7 +349,12 @@ async function startAttack(): Promise<void> {
   }
 
   state.attackRunning = false;
-  render();
+  setStatusMessage(
+    state.attackMode === 'vulnerable'
+      ? `Attack run complete. Recovered ${state.attackState.recoveredBits} of ${state.attackState.totalBits} bits.`
+      : `Patched attack run complete. Recovered ${state.attackState.recoveredBits} bits.`,
+  );
+  render('launch-attack');
 }
 
 function exportSamples(): void {
@@ -356,8 +374,11 @@ function exportSamples(): void {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = `kyberslash-${state.attackMode}-samples.json`;
+  document.body.append(anchor);
   anchor.click();
+  anchor.remove();
   URL.revokeObjectURL(url);
+  setStatusMessage(`Exported ${state.attackMode} timing samples.`);
 }
 
 function measurementSummary(values: number[]): { value: number; stddev: number } {
@@ -417,8 +438,8 @@ function renderSmokingGun(): string {
         <h2>The vulnerable line of code</h2>
       </div>
       <div class="toggle-row">
-        <button class="chip ${state.codeMode === 'vulnerable' ? 'is-active' : ''}" data-action="code-vulnerable">Vulnerable reference C</button>
-        <button class="chip ${state.codeMode === 'patched' ? 'is-active' : ''}" data-action="code-patched">Patched Barrett reduction</button>
+        <button type="button" class="chip ${state.codeMode === 'vulnerable' ? 'is-active' : ''}" data-action="code-vulnerable" aria-pressed="${state.codeMode === 'vulnerable'}">Vulnerable reference C</button>
+        <button type="button" class="chip ${state.codeMode === 'patched' ? 'is-active' : ''}" data-action="code-patched" aria-pressed="${state.codeMode === 'patched'}">Patched Barrett reduction</button>
       </div>
       <div class="code-card ${state.codeMode === 'vulnerable' ? 'is-danger' : 'is-safe'}">
         <pre><code>${escapeHtml(code)}</code></pre>
@@ -438,15 +459,15 @@ function renderOscilloscope(): string {
     state.patchedSamples.length > 1 ? Math.max(...state.patchedSamples) - Math.min(...state.patchedSamples) : 0;
 
   return `
-    <section class="panel">
+    <section class="panel" aria-busy="${state.measuring}">
       <div class="section-heading">
         <p class="kicker">Exhibit 2</p>
         <h2>The oscilloscope</h2>
       </div>
       <div class="controls-row">
-        <button class="control" data-action="next-measurement" ${state.measuring ? 'disabled' : ''}>Next measurement</button>
-        <button class="control" data-action="run-hundred" ${state.measuring ? 'disabled' : ''}>Run 100 measurements</button>
-        <button class="control ghost" data-action="toggle-distribution">${state.showDistribution ? 'Hide' : 'Show'} statistical distribution</button>
+        <button type="button" class="control" data-action="next-measurement" ${state.measuring ? 'disabled' : ''}>Next measurement</button>
+        <button type="button" class="control" data-action="run-hundred" ${state.measuring ? 'disabled' : ''}>Run 100 measurements</button>
+        <button type="button" class="control ghost" data-action="toggle-distribution" aria-pressed="${state.showDistribution}">${state.showDistribution ? 'Hide' : 'Show'} statistical distribution</button>
       </div>
       <div class="trace-grid">
         <article class="trace-card trace-card--danger">
@@ -490,7 +511,7 @@ function renderAttack(): string {
   const attackTrace = createPolyline(state.attackQueryTimes, state.attackMode === 'vulnerable' ? 'danger' : 'safe');
 
   return `
-    <section class="panel">
+    <section class="panel" aria-busy="${state.attackRunning}">
       <div class="section-heading">
         <p class="kicker">Exhibit 3</p>
         <h2>Live attack progress</h2>
@@ -502,8 +523,8 @@ function renderAttack(): string {
           <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. It mirrors the paper's leakage dynamics without pretending to measure actual CPU cycles in the browser.</p>
         </div>
         <div class="attack-mode-toggle">
-          <button class="chip ${state.attackMode === 'vulnerable' ? 'is-active' : ''}" data-action="mode-vulnerable">Vulnerable path</button>
-          <button class="chip ${state.attackMode === 'patched' ? 'is-active' : ''}" data-action="mode-patched">Patched path</button>
+          <button type="button" class="chip ${state.attackMode === 'vulnerable' ? 'is-active' : ''}" data-action="mode-vulnerable" aria-pressed="${state.attackMode === 'vulnerable'}">Vulnerable path</button>
+          <button type="button" class="chip ${state.attackMode === 'patched' ? 'is-active' : ''}" data-action="mode-patched" aria-pressed="${state.attackMode === 'patched'}">Patched path</button>
         </div>
       </div>
       <div class="attack-layout">
@@ -512,30 +533,30 @@ function renderAttack(): string {
           <p class="attack-line"><span>Implementation:</span><strong>${displayedMode}</strong></p>
           <p class="attack-line"><span>Target platform:</span><strong>Simulated Raspberry Pi 2 / Cortex-A7</strong></p>
           <div class="meter-block">
-            <label>Queries sent</label>
-            <div class="meter"><span style="width:${progress}%"></span></div>
+            <p class="meter-label">Queries sent</p>
+            <div class="meter" aria-hidden="true"><span style="width:${progress}%"></span></div>
             <small>${formatInteger(state.attackState.queries)} / ${formatInteger(ATTACK_QUERY_BUDGET)}</small>
           </div>
           <div class="meter-block">
-            <label>Bits recovered</label>
-            <div class="meter meter--gold"><span style="width:${recoveredProgress}%"></span></div>
+            <p class="meter-label">Bits recovered</p>
+            <div class="meter meter--gold" aria-hidden="true"><span style="width:${recoveredProgress}%"></span></div>
             <small>${formatInteger(state.attackState.recoveredBits)} / ${formatInteger(state.attackState.totalBits)}</small>
           </div>
           <div class="meter-block">
-            <label>Simulated elapsed time</label>
-            <div class="meter meter--cyan"><span style="width:${progress}%"></span></div>
+            <p class="meter-label">Simulated elapsed time</p>
+            <div class="meter meter--cyan" aria-hidden="true"><span style="width:${progress}%"></span></div>
             <small>${formatDecimal(state.attackState.queries / 1500, 1)} minutes</small>
           </div>
           <div class="controls-row">
-            <button class="control" data-action="launch-attack" ${state.attackRunning ? 'disabled' : ''}>Launch KyberSlash attack</button>
-            <button class="control ghost" data-action="stop-attack" ${state.attackRunning ? '' : 'disabled'}>Stop</button>
-            <button class="control ghost" data-action="export-samples">Export timing samples</button>
+            <button type="button" class="control" data-action="launch-attack" ${state.attackRunning ? 'disabled' : ''}>Launch KyberSlash attack</button>
+            <button type="button" class="control ghost" data-action="stop-attack" ${state.attackRunning ? '' : 'disabled'}>Stop</button>
+            <button type="button" class="control ghost" data-action="export-samples">Export timing samples</button>
           </div>
           <div class="controls-row compact">
-            <button class="control subtle" data-action="switch-implementation">Switch to ${state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable'} implementation</button>
+            <button type="button" class="control subtle" data-action="switch-implementation">Switch to ${state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable'} implementation</button>
           </div>
         </div>
-        <div class="attack-card attack-card--secondary">
+        <div class="attack-card attack-card--secondary" aria-live="polite">
           ${attackTrace}
           <div class="analysis-box">
             <p>Timing correlation test</p>
@@ -548,6 +569,8 @@ function renderAttack(): string {
             ${
               state.attackMode === 'patched'
                 ? `<ul><li>Correlation collapses to the measurement noise floor.</li><li>No coefficient advances because the distribution stays statistically flat.</li></ul>`
+                : state.attackEvents.length === 0
+                  ? `<ul><li>No coefficients recovered yet. Launch the attack to begin collecting distinguishable traces.</li></ul>`
                 : `<ul>${state.attackEvents
                     .map(
                       (event) => `<li>Coefficient ${event.coefficient}: +${formatDecimal(event.confidence, 2)} confidence -> value = ${event.value}</li>`,
@@ -613,18 +636,20 @@ function renderLessons(): string {
     </section>`;
 }
 
-function render(): void {
+function render(focusTarget?: string): void {
   const summary = measurementSummary(state.vulnerableSamples);
   const patchedSummary = measurementSummary(state.patchedSamples);
 
   app.innerHTML = `
-    <main class="lab-shell">
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <main id="main-content" class="lab-shell" tabindex="-1">
+      <div class="sr-only" aria-live="polite">${escapeHtml(state.statusMessage)}</div>
       <header class="topbar">
         <div>
           <p class="topbar-label">Educational side-channel lab</p>
           <strong>ML-KEM-768 / Kyber768 parameters: n=${KYBER_PARAMS.n}, k=${KYBER_PARAMS.k}, q=${KYBER_PARAMS.q}, eta1=${KYBER_PARAMS.eta1}, eta2=${KYBER_PARAMS.eta2}, du=${KYBER_PARAMS.du}, dv=${KYBER_PARAMS.dv}</strong>
         </div>
-        <button class="theme-toggle" data-action="toggle-theme">Theme: ${state.theme}</button>
+        <button type="button" class="theme-toggle" data-action="toggle-theme" aria-pressed="${state.theme === 'dark'}" aria-label="Toggle color theme. Current theme ${state.theme}.">Theme: ${state.theme}</button>
       </header>
       ${renderHero()}
       <section class="status-strip">
@@ -642,6 +667,13 @@ function render(): void {
         <p>JavaScript cannot measure the real timing of CPU division instructions reliably. This demo therefore uses a deterministic leakage model aligned with the published KyberSlash paper rather than browser timing APIs.</p>
       </footer>
     </main>`;
+
+  if (focusTarget) {
+    const focusElement = app.querySelector<HTMLElement>(`[data-action="${focusTarget}"]`);
+    if (focusElement && !focusElement.hasAttribute('disabled')) {
+      focusElement.focus();
+    }
+  }
 }
 
 app.addEventListener('click', (event) => {
@@ -658,47 +690,52 @@ app.addEventListener('click', (event) => {
   switch (action) {
     case 'toggle-theme':
       setTheme(state.theme === 'dark' ? 'light' : 'dark');
-      render();
+      render('toggle-theme');
       break;
     case 'code-vulnerable':
       state.codeMode = 'vulnerable';
-      render();
+      setStatusMessage('Showing the vulnerable reference code path.');
+      render('code-vulnerable');
       break;
     case 'code-patched':
       state.codeMode = 'patched';
-      render();
+      setStatusMessage('Showing the patched Barrett-reduction code path.');
+      render('code-patched');
       break;
     case 'next-measurement':
-      void runMeasurementBatch(1);
+      void runMeasurementBatch(1, 'next-measurement');
       break;
     case 'run-hundred':
-      void runMeasurementBatch(100);
+      void runMeasurementBatch(100, 'run-hundred');
       break;
     case 'toggle-distribution':
       state.showDistribution = !state.showDistribution;
-      render();
+      setStatusMessage(`${state.showDistribution ? 'Showing' : 'Hiding'} timing distribution histogram.`);
+      render('toggle-distribution');
       break;
     case 'mode-vulnerable':
       resetAttack('vulnerable');
-      render();
+      render('mode-vulnerable');
       break;
     case 'mode-patched':
       resetAttack('patched');
-      render();
+      render('mode-patched');
       break;
     case 'launch-attack':
       void startAttack();
       break;
     case 'stop-attack':
       state.attackStopRequested = true;
-      render();
+      setStatusMessage('Stopping the current attack simulation.');
+      render('stop-attack');
       break;
     case 'export-samples':
       exportSamples();
+      render('export-samples');
       break;
     case 'switch-implementation':
       resetAttack(state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable');
-      render();
+      render('switch-implementation');
       break;
     default:
       break;

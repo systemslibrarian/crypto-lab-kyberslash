@@ -442,9 +442,28 @@ blockquote footer {
   gap: 16px;
 }
 
-.fact-grid,
+.fact-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .status-strip {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.lesson-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.callout-row {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.trace-grid {
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+
+.attack-layout {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
 .fact-grid article,
@@ -535,11 +554,6 @@ blockquote footer {
   color: var(--muted);
 }
 
-.trace-grid,
-.attack-layout,
-.callout-row {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
 
 .trace-card,
 .attack-card,
@@ -740,9 +754,6 @@ blockquote footer {
   color: var(--muted);
 }
 
-.lesson-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
 
 .callout.danger {
   box-shadow: inset 0 0 0 1px rgba(255, 51, 102, 0.18);
@@ -1498,17 +1509,8 @@ blockquote footer {
 }
 
 @media (max-width: 1080px) {
-  .hero-shell,
-  .trace-grid,
-  .attack-layout,
-  .callout-row,
-  .lesson-grid {
+  .hero-shell {
     grid-template-columns: 1fr;
-  }
-
-  .fact-grid,
-  .status-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .topbar,

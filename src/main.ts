@@ -216,6 +216,26 @@ const BRIDGES: readonly Bridge[] = [
 const MILESTONE_PCT: readonly number[] = [10, 25, 50, 75, 100];
 const ATTACK_LOG_LIMIT = 24;
 
+const TRY_THIS: readonly string[] = [
+  'Toggle between <strong>Vulnerable reference C</strong> and <strong>Patched Barrett reduction</strong> below. The single highlighted line is the entire bug — and the entire fix. The vulnerable line divides by <code>q = 3329</code>; the patched line replaces division with multiplication and a shift.',
+  'Press <strong>Run 100 measurements</strong>. Watch the verdict bar above turn red. The vulnerable mean drifts; the patched mean stays flat — that timing gap is the secret leaking. Then try <strong>Cortex-M4</strong> in the hero — same story, smaller spread.',
+  'Press <strong>Launch KyberSlash attack</strong>. The 768 cells below light up coefficient by coefficient, and the gold pill confirms the recovered key matches the real one. When it finishes, switch to <strong>Patched path</strong> and launch again — nothing happens, because the leak is gone.',
+  'Skim the dates. NIST standardised Kyber in <strong>2022</strong>. Cryspen spotted the bug in <strong>2024</strong>. That two-year gap is the window any real deployment had to weather, and it is why "standardised" and "safe to deploy" are not the same property.',
+  'Read one lesson per scroll. The cards at the bottom point to neighbouring failure modes in the broader Crypto Lab — fault injection, classical timing oracles, padding oracles — so you can see how KyberSlash fits into the wider implementation-bug genealogy.',
+];
+
+function renderTryThis(index: number): string {
+  const text = TRY_THIS[index];
+  if (!text) {
+    return '';
+  }
+  return `
+    <aside class="try-this" aria-label="What to try in this exhibit">
+      <span class="try-this-label">Try this</span>
+      <p>${text}</p>
+    </aside>`;
+}
+
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
 if (!appRoot) {
@@ -604,11 +624,13 @@ function renderHero(): string {
   return `
     <section class="hero-shell">
       <div class="hero-copy">
-        <p class="eyebrow">crypto-lab-kyberslash</p>
-        <h1>KyberSlash timing attack on ML-KEM</h1>
+        <p class="eyebrow">Crypto Lab · KyberSlash</p>
+        <h1>How a single CPU division leaked a post-quantum secret key</h1>
         <p class="lead">
-          A browser-only educational lab showing how secret-dependent division in the Kyber reference implementation leaked keys on
-          <strong>ARM Cortex-A7</strong> and <strong>Cortex-M4</strong>, even though ML-KEM became <strong>NIST FIPS 203</strong>.
+          ML-KEM (formerly Kyber) is the post-quantum encryption replacing RSA in TLS and NIST <strong>FIPS 203</strong>. Its reference C code passed years of review before standardisation. But on a $35 Raspberry Pi, a single line of math took different amounts of time depending on the secret value being processed — and that timing gap alone was enough to recover the entire key.
+        </p>
+        <p class="lead">
+          This page walks through the bug, the one-line patch, and a live in-browser attack that recovers all 768 coefficients of an ML-KEM-768 secret key. <strong>Work down through Exhibits 1–5 below — each one tells you exactly what to click.</strong>
         </p>
         <div class="platform-toggle" role="group" aria-label="Simulated target platform">
           <span class="platform-label">Target platform</span>
@@ -623,10 +645,6 @@ function renderHero(): string {
         </div>
       </div>
       <aside class="hero-side">
-        <blockquote>
-          <p>${QUOTE}</p>
-          <footer>1 Corinthians 10:31</footer>
-        </blockquote>
         <div class="fact-grid">
           <article><span>Platform</span><strong>Raspberry Pi 2, Cortex-A7</strong></article>
           <article><span>Embedded target</span><strong>ARM Cortex-M4</strong></article>
@@ -668,6 +686,7 @@ function renderSmokingGun(): string {
         <p class="kicker">Exhibit 1 of 5</p>
         <h2>The vulnerable line of code</h2>
       </div>
+      ${renderTryThis(0)}
       <div class="toggle-row">
         <button type="button" class="chip ${state.codeMode === 'vulnerable' ? 'is-active' : ''}" data-action="code-vulnerable" aria-pressed="${state.codeMode === 'vulnerable'}">Vulnerable reference C</button>
         <button type="button" class="chip ${state.codeMode === 'patched' ? 'is-active' : ''}" data-action="code-patched" aria-pressed="${state.codeMode === 'patched'}">Patched Barrett reduction</button>
@@ -709,6 +728,7 @@ function renderOscilloscope(): string {
         <p class="kicker">Exhibit 2 of 5</p>
         <h2>The oscilloscope</h2>
       </div>
+      ${renderTryThis(1)}
       <div class="verdict verdict--${verdictTone}" role="status">
         <div class="verdict-row">
           <span class="verdict-pill">Variance ratio</span>
@@ -854,6 +874,7 @@ function renderAttack(): string {
         <p class="kicker">Exhibit 3 of 5</p>
         <h2>Live attack progress</h2>
       </div>
+      ${renderTryThis(2)}
       <div class="milestone-strip" role="group" aria-label="Recovery milestones">
         ${milestoneStrip}
       </div>
@@ -944,6 +965,7 @@ function renderTimeline(): string {
         <p class="kicker">Exhibit 4 of 5</p>
         <h2>The disclosure timeline</h2>
       </div>
+      ${renderTryThis(3)}
       <div class="timeline">
         ${TIMELINE.map(([date, text]) => `<article><span>${date}</span><p>${text}</p></article>`).join('')}
       </div>
@@ -970,6 +992,7 @@ function renderLessons(): string {
         <p class="kicker">Exhibit 5 of 5</p>
         <h2>What this means for PQ deployment</h2>
       </div>
+      ${renderTryThis(4)}
       <div class="lesson-grid">
         ${LESSONS.map((lesson, index) => `<article><span>Lesson ${index + 1}</span><p>${lesson}</p></article>`).join('')}
       </div>
@@ -1059,6 +1082,10 @@ function render(focusTarget?: string): void {
           ·
           <a href="https://github.com/systemslibrarian/crypto-lab-kyberslash" target="_blank" rel="noopener">source on GitHub</a>
         </p>
+        <blockquote class="footer-verse">
+          <p>${QUOTE}</p>
+          <footer>1 Corinthians 10:31</footer>
+        </blockquote>
       </footer>
       <div class="live-status" aria-hidden="true">
         <span class="live-status__dot ${state.attackRunning || state.measuring ? 'is-active' : ''}"></span>

@@ -17,11 +17,17 @@ import {
   polyTomsgPatched,
   polyTomsgVulnerable,
 } from './implementations';
-import { aggregateTimings } from './timing-model';
+import {
+  aggregateTimings,
+  PLATFORM_LABELS,
+  setActivePlatform,
+  type Platform,
+} from './timing-model';
 
 type ThemeMode = 'dark' | 'light';
 type CodeMode = 'vulnerable' | 'patched';
 type AttackMode = 'vulnerable' | 'patched';
+type LogKind = 'info' | 'recovery' | 'milestone' | 'warning' | 'success';
 
 interface RecoveryEvent {
   coefficient: number;
@@ -29,8 +35,16 @@ interface RecoveryEvent {
   value: number;
 }
 
+interface LogEntry {
+  kind: LogKind;
+  text: string;
+  elapsedSeconds: number;
+  query: number;
+}
+
 interface AppState {
   theme: ThemeMode;
+  platform: Platform;
   codeMode: CodeMode;
   showDistribution: boolean;
   measuring: boolean;
@@ -45,6 +59,9 @@ interface AppState {
   attackState: AttackState;
   attackQueryTimes: number[];
   attackEvents: RecoveryEvent[];
+  attackLog: LogEntry[];
+  attackStartedAt: number | null;
+  milestonesReached: number[];
   statusMessage: string;
 }
 
@@ -104,14 +121,100 @@ const LESSONS = [
   'Safe deployments need maintained libraries, target-platform timing analysis, and explicit constant-time review.',
 ] as const;
 
-const CROSSLINKS = [
-  'crypto-lab-kyber-vault - ML-KEM-768 baseline demo',
-  'crypto-lab-pq-tls-handshake - where ML-KEM lands in TLS 1.3',
-  'crypto-lab-lattice-fault - fault-injection attacks on lattice systems',
-  'crypto-lab-timing-oracle - classical timing-oracle failures',
-  'crypto-lab-padding-oracle - implementation bugs defeating correct mathematics',
-  'crypto-lab-model-breach - broader cryptographic deployment failures',
-] as const;
+interface CrossLink {
+  slug: string;
+  title: string;
+  description: string;
+  href: string;
+  tone: 'teal' | 'violet' | 'amber' | 'crimson';
+}
+
+const CROSSLINKS: readonly CrossLink[] = [
+  {
+    slug: 'crypto-lab-kyber-vault',
+    title: 'Kyber Vault',
+    description: 'ML-KEM-768 baseline demo — encapsulation and decapsulation with verified parameters.',
+    href: 'https://crypto-lab.systemslibrarian.dev/',
+    tone: 'teal',
+  },
+  {
+    slug: 'crypto-lab-pq-tls-handshake',
+    title: 'PQ TLS Handshake',
+    description: 'Where ML-KEM lands inside TLS 1.3 — hybrid key agreement walked end-to-end.',
+    href: 'https://crypto-lab.systemslibrarian.dev/',
+    tone: 'violet',
+  },
+  {
+    slug: 'crypto-lab-lattice-fault',
+    title: 'Lattice Fault',
+    description: 'Fault-injection attacks against lattice systems — bit flips that break decryption.',
+    href: 'https://crypto-lab.systemslibrarian.dev/',
+    tone: 'crimson',
+  },
+  {
+    slug: 'crypto-lab-timing-oracle',
+    title: 'Timing Oracle',
+    description: 'Classical timing-oracle failures — the genealogy KyberSlash inherits from.',
+    href: 'https://crypto-lab.systemslibrarian.dev/',
+    tone: 'amber',
+  },
+  {
+    slug: 'crypto-lab-padding-oracle',
+    title: 'Padding Oracle',
+    description: 'Implementation bugs defeating correct mathematics — the same shape, decades earlier.',
+    href: 'https://crypto-lab.systemslibrarian.dev/',
+    tone: 'amber',
+  },
+  {
+    slug: 'crypto-lab-model-breach',
+    title: 'Model Breach',
+    description: 'Broader deployment failures across the post-quantum stack.',
+    href: 'https://crypto-lab.systemslibrarian.dev/',
+    tone: 'violet',
+  },
+];
+
+interface ExhibitMeta {
+  number: number;
+  id: string;
+  title: string;
+  shortTitle: string;
+}
+
+const EXHIBITS: readonly ExhibitMeta[] = [
+  { number: 1, id: 'exhibit-1', title: 'The vulnerable line of code', shortTitle: 'Smoking gun' },
+  { number: 2, id: 'exhibit-2', title: 'The oscilloscope', shortTitle: 'Measure leak' },
+  { number: 3, id: 'exhibit-3', title: 'Live attack progress', shortTitle: 'Recover key' },
+  { number: 4, id: 'exhibit-4', title: 'The disclosure timeline', shortTitle: 'Disclosure' },
+  { number: 5, id: 'exhibit-5', title: 'What this means for PQ deployment', shortTitle: 'Lessons' },
+];
+
+interface Bridge {
+  proved: string;
+  next: string;
+}
+
+const BRIDGES: readonly Bridge[] = [
+  {
+    proved: 'One division on a secret-dependent operand becomes the whole story.',
+    next: 'Now measure exactly what that one line costs the attacker.',
+  },
+  {
+    proved: 'Variable timing means the secret leaks one cycle at a time.',
+    next: 'Time to put that leak to work and recover the key in your browser.',
+  },
+  {
+    proved: '768 coefficients fall to a model that costs nothing to run.',
+    next: 'Compare what the field already knew about the failure window.',
+  },
+  {
+    proved: 'Industry patched in months because the fix is local and small.',
+    next: 'So what does any of this mean for a team shipping ML-KEM today?',
+  },
+];
+
+const MILESTONE_PCT: readonly number[] = [10, 25, 50, 75, 100];
+const ATTACK_LOG_LIMIT = 24;
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -124,10 +227,16 @@ const app = appRoot;
 document.title = 'KyberSlash Timing Attack on ML-KEM';
 
 const initialTheme = (document.documentElement.getAttribute('data-theme') ?? 'dark') as ThemeMode;
+const initialPlatform: Platform = (() => {
+  const stored = localStorage.getItem('platform');
+  return stored === 'cortex-m4' ? 'cortex-m4' : 'cortex-a7';
+})();
+setActivePlatform(initialPlatform);
 const initialSecret = generateSecretKey();
 
 const state: AppState = {
   theme: initialTheme,
+  platform: initialPlatform,
   codeMode: 'vulnerable',
   showDistribution: false,
   measuring: false,
@@ -142,6 +251,9 @@ const state: AppState = {
   attackState: createAttackState(initialSecret),
   attackQueryTimes: [],
   attackEvents: [],
+  attackLog: [],
+  attackStartedAt: null,
+  milestonesReached: [],
   statusMessage: 'KyberSlash lab ready. Initial timing traces loaded.',
 };
 
@@ -291,6 +403,41 @@ function latestMeasurements(values: number[]): string {
     .join('');
 }
 
+function elapsedSeconds(): number {
+  if (state.attackStartedAt === null) {
+    return 0;
+  }
+  return (performance.now() - state.attackStartedAt) / 1000;
+}
+
+function pushLog(kind: LogKind, text: string): void {
+  state.attackLog = [
+    {
+      kind,
+      text,
+      elapsedSeconds: elapsedSeconds(),
+      query: state.attackState.queries,
+    },
+    ...state.attackLog,
+  ].slice(0, ATTACK_LOG_LIMIT);
+}
+
+function checkMilestone(): void {
+  const total = state.attackSecret.coeffs.length;
+  const recovered = state.attackState.currentCoefficient;
+  const pct = (recovered / total) * 100;
+  for (const threshold of MILESTONE_PCT) {
+    if (pct >= threshold && !state.milestonesReached.includes(threshold)) {
+      state.milestonesReached = [...state.milestonesReached, threshold];
+      const verb = threshold === 100 ? 'recovered' : 'crossed';
+      pushLog(
+        threshold === 100 ? 'success' : 'milestone',
+        `${threshold}% ${verb} — ${recovered}/${total} coefficients`,
+      );
+    }
+  }
+}
+
 function resetAttack(mode: AttackMode = state.attackMode): void {
   state.attackMode = mode;
   state.attackRunning = false;
@@ -299,6 +446,9 @@ function resetAttack(mode: AttackMode = state.attackMode): void {
   state.attackState = createAttackState(state.attackSecret);
   state.attackQueryTimes = [];
   state.attackEvents = [];
+  state.attackLog = [];
+  state.attackStartedAt = null;
+  state.milestonesReached = [];
   setStatusMessage(`Attack mode set to ${mode === 'vulnerable' ? 'vulnerable implementation' : 'patched implementation'}.`);
 }
 
@@ -322,7 +472,12 @@ async function startAttack(): Promise<void> {
   resetAttack(state.attackMode);
   state.attackRunning = true;
   state.attackStopRequested = false;
+  state.attackStartedAt = performance.now();
   const runId = state.attackRunId;
+  pushLog(
+    'info',
+    `Launching ${state.attackMode} run · ${PLATFORM_LABELS[state.platform]} · budget ${formatInteger(ATTACK_QUERY_BUDGET)} queries`,
+  );
   setStatusMessage(`Launching ${state.attackMode === 'vulnerable' ? 'vulnerable' : 'patched'} attack simulation.`);
   render('stop-attack');
 
@@ -348,6 +503,11 @@ async function startAttack(): Promise<void> {
 
       if (result.bitsRecoveredThisRound > 0) {
         pushAttackEvent(attackedCoefficient, state.attackSecret.coeffs[attackedCoefficient]);
+        pushLog(
+          'recovery',
+          `coeff ${attackedCoefficient} → ${state.attackSecret.coeffs[attackedCoefficient] >= 0 ? '+' : ''}${state.attackSecret.coeffs[attackedCoefficient]}`,
+        );
+        checkMilestone();
       }
     }
 
@@ -356,6 +516,20 @@ async function startAttack(): Promise<void> {
   }
 
   state.attackRunning = false;
+  if (state.attackMode === 'vulnerable') {
+    if (state.attackState.currentCoefficient === state.attackSecret.coeffs.length) {
+      pushLog('success', `Run complete · ${state.attackState.queries} queries used · key fully recovered`);
+    } else if (state.attackStopRequested) {
+      pushLog('warning', `Run halted at ${state.attackState.currentCoefficient}/${state.attackSecret.coeffs.length}`);
+    } else {
+      pushLog(
+        'warning',
+        `Query budget exhausted at ${state.attackState.currentCoefficient}/${state.attackSecret.coeffs.length}`,
+      );
+    }
+  } else {
+    pushLog('info', 'Patched run finished — no statistical signal above noise floor');
+  }
   setStatusMessage(
     state.attackMode === 'vulnerable'
       ? `Attack run complete. Recovered ${state.attackState.recoveredBits} of ${state.attackState.totalBits} bits.`
@@ -392,7 +566,41 @@ function measurementSummary(values: number[]): { value: number; stddev: number }
   return aggregateTimings(values, 'mean');
 }
 
+function renderProgressRail(): string {
+  return `
+    <nav class="exhibit-rail" aria-label="Lab exhibits" id="exhibit-rail">
+      ${EXHIBITS.map(
+        (exhibit) => `
+        <a class="rail-link" href="#${exhibit.id}" data-exhibit="${exhibit.number}">
+          <span class="rail-number">${String(exhibit.number).padStart(2, '0')}</span>
+          <span class="rail-title">${exhibit.shortTitle}</span>
+        </a>`,
+      ).join('')}
+    </nav>`;
+}
+
+function renderBridge(index: number): string {
+  const bridge = BRIDGES[index];
+  if (!bridge) {
+    return '';
+  }
+  return `
+    <aside class="bridge" aria-hidden="true">
+      <div class="bridge-row">
+        <span class="bridge-label">Just proved</span>
+        <p>${bridge.proved}</p>
+      </div>
+      <div class="bridge-row">
+        <span class="bridge-label">Up next</span>
+        <p>${bridge.next}</p>
+      </div>
+    </aside>`;
+}
+
 function renderHero(): string {
+  const platformLabel = PLATFORM_LABELS[state.platform];
+  const altPlatform: Platform = state.platform === 'cortex-a7' ? 'cortex-m4' : 'cortex-a7';
+  const altLabel = PLATFORM_LABELS[altPlatform];
   return `
     <section class="hero-shell">
       <div class="hero-copy">
@@ -402,6 +610,12 @@ function renderHero(): string {
           A browser-only educational lab showing how secret-dependent division in the Kyber reference implementation leaked keys on
           <strong>ARM Cortex-A7</strong> and <strong>Cortex-M4</strong>, even though ML-KEM became <strong>NIST FIPS 203</strong>.
         </p>
+        <div class="platform-toggle" role="group" aria-label="Simulated target platform">
+          <span class="platform-label">Target platform</span>
+          <button type="button" class="chip ${state.platform === 'cortex-a7' ? 'is-active' : ''}" data-action="set-platform-a7" aria-pressed="${state.platform === 'cortex-a7'}">Cortex-A7</button>
+          <button type="button" class="chip ${state.platform === 'cortex-m4' ? 'is-active' : ''}" data-action="set-platform-m4" aria-pressed="${state.platform === 'cortex-m4'}">Cortex-M4</button>
+          <span class="platform-current">simulating ${escapeHtml(platformLabel)} · click to switch to ${escapeHtml(altLabel)}</span>
+        </div>
         <div class="hero-notes">
           <span class="pill pill--danger">KyberSlash1: decapsulation / poly_tomsg</span>
           <span class="pill pill--danger">KyberSlash2: encapsulation / poly_compress</span>
@@ -449,9 +663,9 @@ function renderSmokingGun(): string {
         ];
 
   return `
-    <section class="panel">
+    <section class="panel exhibit" id="exhibit-1" data-exhibit="1">
       <div class="section-heading">
-        <p class="kicker">Exhibit 1</p>
+        <p class="kicker">Exhibit 1 of 5</p>
         <h2>The vulnerable line of code</h2>
       </div>
       <div class="toggle-row">
@@ -475,11 +689,40 @@ function renderOscilloscope(): string {
   const patchedVariance =
     state.patchedSamples.length > 1 ? Math.max(...state.patchedSamples) - Math.min(...state.patchedSamples) : 0;
 
+  const vulnerableMean = vulnerableStats.value;
+  const patchedMean = patchedStats.value;
+  const deltaCycles = Math.max(0, vulnerableMean - patchedMean);
+  const ratio = patchedMean > 0 ? vulnerableMean / patchedMean : 0;
+  const spreadRatio = patchedVariance > 0 ? vulnerableVariance / patchedVariance : 0;
+  const samplesReady = state.vulnerableSamples.length >= 6 && state.patchedSamples.length >= 6;
+  const verdictTone = !samplesReady ? 'pending' : spreadRatio >= 4 ? 'leak' : 'edge';
+  const verdictHeadline =
+    !samplesReady
+      ? 'Collect a few measurements to see the contrast.'
+      : verdictTone === 'leak'
+        ? 'Leak detected — vulnerable path swings, patched path is flat.'
+        : 'Edge case — collect more samples to widen the gap.';
+
   return `
-    <section class="panel" aria-busy="${state.measuring}">
+    <section class="panel exhibit" id="exhibit-2" data-exhibit="2" aria-busy="${state.measuring}">
       <div class="section-heading">
-        <p class="kicker">Exhibit 2</p>
+        <p class="kicker">Exhibit 2 of 5</p>
         <h2>The oscilloscope</h2>
+      </div>
+      <div class="verdict verdict--${verdictTone}" role="status">
+        <div class="verdict-row">
+          <span class="verdict-pill">Variance ratio</span>
+          <strong>${samplesReady ? `${formatDecimal(spreadRatio, 1)}× wider` : '—'}</strong>
+        </div>
+        <div class="verdict-row">
+          <span class="verdict-pill">Mean delta</span>
+          <strong>${formatInteger(deltaCycles)} cycles</strong>
+        </div>
+        <div class="verdict-row">
+          <span class="verdict-pill">Mean ratio</span>
+          <strong>${samplesReady ? `${formatDecimal(ratio, 2)}×` : '—'}</strong>
+        </div>
+        <p class="verdict-headline">${verdictHeadline}</p>
       </div>
       <div class="controls-row">
         <button type="button" class="control" data-action="next-measurement" ${state.measuring ? 'disabled' : ''}>Next measurement</button>
@@ -600,11 +843,19 @@ function renderAttack(): string {
   const recoveredProgress = (state.attackState.recoveredBits / state.attackState.totalBits) * 100;
   const attackTrace = createPolyline(state.attackQueryTimes, state.attackMode === 'vulnerable' ? 'danger' : 'safe');
 
+  const milestoneStrip = MILESTONE_PCT.map((threshold) => {
+    const reached = state.milestonesReached.includes(threshold);
+    return `<span class="milestone ${reached ? 'is-reached' : ''}" aria-label="${threshold}% milestone${reached ? ' reached' : ''}">${threshold}%</span>`;
+  }).join('');
+
   return `
-    <section class="panel" aria-busy="${state.attackRunning}">
+    <section class="panel exhibit" id="exhibit-3" data-exhibit="3" aria-busy="${state.attackRunning}">
       <div class="section-heading">
-        <p class="kicker">Exhibit 3</p>
+        <p class="kicker">Exhibit 3 of 5</p>
         <h2>Live attack progress</h2>
+      </div>
+      <div class="milestone-strip" role="group" aria-label="Recovery milestones">
+        ${milestoneStrip}
       </div>
       <div class="attack-summary">
         <div>
@@ -622,7 +873,7 @@ function renderAttack(): string {
         <div class="attack-card">
           <p class="attack-line"><span>Target:</span><strong>ML-KEM-768 secret key, 768 coefficients</strong></p>
           <p class="attack-line"><span>Implementation:</span><strong>${displayedMode}</strong></p>
-          <p class="attack-line"><span>Target platform:</span><strong>Simulated Raspberry Pi 2 / Cortex-A7</strong></p>
+          <p class="attack-line"><span>Target platform:</span><strong>Simulated ${escapeHtml(PLATFORM_LABELS[state.platform])}</strong></p>
           <div class="meter-block">
             <p class="meter-label">Queries sent</p>
             <div class="meter" aria-hidden="true"><span style="width:${progress}%"></span></div>
@@ -656,18 +907,29 @@ function renderAttack(): string {
             <span>confidence = ${formatDecimal(analysis.confidenceLevel, 3)}</span>
             <span>estimated queries needed = ${formatInteger(analysis.estimatedQueriesNeeded)}</span>
           </div>
-          <div class="recent-events">
-            <p>Recent recoveries</p>
+          <div class="attack-log" aria-label="Attack event log">
+            <header class="attack-log-header">
+              <p>Attack log</p>
+              <span class="attack-log-count">${state.attackLog.length} event${state.attackLog.length === 1 ? '' : 's'}</span>
+            </header>
             ${
-              state.attackMode === 'patched'
-                ? `<ul><li>Correlation collapses to the measurement noise floor.</li><li>No coefficient advances because the distribution stays statistically flat.</li></ul>`
-                : state.attackEvents.length === 0
-                  ? `<ul><li>No coefficients recovered yet. Launch the attack to begin collecting distinguishable traces.</li></ul>`
-                : `<ul>${state.attackEvents
-                    .map(
-                      (event) => `<li>Coefficient ${event.coefficient}: +${formatDecimal(event.confidence, 2)} confidence -> value = ${event.value}</li>`,
-                    )
-                    .join('')}</ul>`
+              state.attackLog.length === 0
+                ? `<p class="attack-log-empty">${
+                    state.attackMode === 'patched'
+                      ? 'Patched path produces no recoveries. Launch a run to confirm the noise floor.'
+                      : 'Launch the attack to begin collecting distinguishable traces.'
+                  }</p>`
+                : `<ol class="attack-log-list">
+                    ${state.attackLog
+                      .map(
+                        (entry) => `<li class="attack-log-entry attack-log-entry--${entry.kind}">
+                          <span class="attack-log-time">T+${formatDecimal(entry.elapsedSeconds, 2)}s</span>
+                          <span class="attack-log-text">${escapeHtml(entry.text)}</span>
+                          <span class="attack-log-meta">q=${formatInteger(entry.query)}</span>
+                        </li>`,
+                      )
+                      .join('')}
+                  </ol>`
             }
           </div>
         </div>
@@ -677,9 +939,9 @@ function renderAttack(): string {
 
 function renderTimeline(): string {
   return `
-    <section class="panel">
+    <section class="panel exhibit" id="exhibit-4" data-exhibit="4">
       <div class="section-heading">
-        <p class="kicker">Exhibit 4</p>
+        <p class="kicker">Exhibit 4 of 5</p>
         <h2>The disclosure timeline</h2>
       </div>
       <div class="timeline">
@@ -703,9 +965,9 @@ function renderLessons(): string {
   const compressPatched = polyCompressPatched(measurementCoefficients(3), KYBER_PARAMS.dv);
 
   return `
-    <section class="panel">
+    <section class="panel exhibit" id="exhibit-5" data-exhibit="5">
       <div class="section-heading">
-        <p class="kicker">Exhibit 5</p>
+        <p class="kicker">Exhibit 5 of 5</p>
         <h2>What this means for PQ deployment</h2>
       </div>
       <div class="lesson-grid">
@@ -723,7 +985,17 @@ function renderLessons(): string {
       </div>
       <div class="crosslinks">
         <h3>Cross-links in the suite</h3>
-        <ul>${CROSSLINKS.map((item) => `<li>${item}</li>`).join('')}</ul>
+        <div class="crosslink-grid">
+          ${CROSSLINKS.map(
+            (link) => `
+            <a class="crosslink-card crosslink-card--${link.tone}" href="${escapeHtml(link.href)}" target="_blank" rel="noopener">
+              <div class="crosslink-slug">${escapeHtml(link.slug)}</div>
+              <div class="crosslink-title">${escapeHtml(link.title)}</div>
+              <p class="crosslink-copy">${escapeHtml(link.description)}</p>
+              <span class="crosslink-arrow" aria-hidden="true">→</span>
+            </a>`,
+          ).join('')}
+        </div>
       </div>
     </section>`;
 }
@@ -768,10 +1040,15 @@ function render(focusTarget?: string): void {
         <article><span>Current patched mean</span><strong>${formatInteger(patchedSummary.value)} cycles</strong></article>
         <article><span>Deployment lesson</span><strong>standardization is not safety</strong></article>
       </section>
+      ${renderProgressRail()}
       ${renderSmokingGun()}
+      ${renderBridge(0)}
       ${renderOscilloscope()}
+      ${renderBridge(1)}
       ${renderAttack()}
+      ${renderBridge(2)}
       ${renderTimeline()}
+      ${renderBridge(3)}
       ${renderLessons()}
       <footer class="footer-note">
         <p>JavaScript cannot measure the real timing of CPU division instructions reliably. This demo therefore uses a deterministic leakage model aligned with the published KyberSlash paper rather than browser timing APIs.</p>
@@ -794,6 +1071,53 @@ function render(focusTarget?: string): void {
     if (focusElement && !focusElement.hasAttribute('disabled')) {
       focusElement.focus();
     }
+  }
+
+  setupScrollSpy();
+}
+
+let scrollSpyObserver: IntersectionObserver | null = null;
+
+function setupScrollSpy(): void {
+  if (typeof IntersectionObserver === 'undefined') {
+    return;
+  }
+  if (scrollSpyObserver) {
+    scrollSpyObserver.disconnect();
+  }
+  const exhibits = Array.from(app.querySelectorAll<HTMLElement>('.exhibit[data-exhibit]'));
+  const links = Array.from(app.querySelectorAll<HTMLAnchorElement>('.rail-link[data-exhibit]'));
+  if (exhibits.length === 0 || links.length === 0) {
+    return;
+  }
+
+  const visible = new Map<string, number>();
+  scrollSpyObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.exhibit ?? '';
+        if (entry.isIntersecting) {
+          visible.set(id, entry.intersectionRatio);
+        } else {
+          visible.delete(id);
+        }
+      }
+      let activeId = '';
+      let bestRatio = -1;
+      for (const [id, ratio] of visible.entries()) {
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          activeId = id;
+        }
+      }
+      for (const link of links) {
+        link.classList.toggle('is-active', link.dataset.exhibit === activeId);
+      }
+    },
+    { rootMargin: '-30% 0px -55% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] },
+  );
+  for (const exhibit of exhibits) {
+    scrollSpyObserver.observe(exhibit);
   }
 }
 
@@ -867,10 +1191,34 @@ app.addEventListener('click', (event) => {
       setStatusMessage('Generated a new ML-KEM-768 secret key. Attack state reset.');
       render('regenerate-key');
       break;
+    case 'set-platform-a7':
+      void switchPlatform('cortex-a7', 'set-platform-a7');
+      break;
+    case 'set-platform-m4':
+      void switchPlatform('cortex-m4', 'set-platform-m4');
+      break;
     default:
       break;
   }
 });
+
+async function switchPlatform(platform: Platform, focusTarget: string): Promise<void> {
+  if (state.platform === platform || state.measuring || state.attackRunning) {
+    return;
+  }
+  state.platform = platform;
+  setActivePlatform(platform);
+  localStorage.setItem('platform', platform);
+  state.measurementIndex = 0;
+  state.vulnerableSamples = [];
+  state.patchedSamples = [];
+  for (let index = 0; index < 6; index += 1) {
+    recordMeasurement();
+  }
+  resetAttack(state.attackMode);
+  setStatusMessage(`Target platform set to ${PLATFORM_LABELS[platform]}. Recomputed timing baselines.`);
+  render(focusTarget);
+}
 
 for (let index = 0; index < 6; index += 1) {
   recordMeasurement();

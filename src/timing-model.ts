@@ -1,6 +1,8 @@
 const KYBER_Q = 3329;
 const DECAPSULATION_BASE_CYCLES = 1024;
 
+export type Platform = 'cortex-a7' | 'cortex-m4';
+
 /**
  * SIMULATED CPU timing model for integer division.
  *
@@ -14,13 +16,67 @@ const DECAPSULATION_BASE_CYCLES = 1024;
  *     dividend 256-2047:  ~12 cycles
  *     dividend 2048-8191: ~20 cycles
  *     dividend 8192+:     ~30 cycles
+ *   Cortex-M4 udiv cycles:
+ *     2-12 cycles, narrower spread but still exploitable.
  */
-export const TIMING_MODEL = {
-  platform: 'ARM_CORTEX_A7',
-  baseCycles: 7,
-  scalingFactor: 3.0,
-  noiseAmplitude: 1.5,
-} as const;
+interface PlatformProfile {
+  platform: Platform;
+  label: string;
+  baseCycles: number;
+  scalingFactor: number;
+  noiseAmplitude: number;
+  buckets: readonly { ceiling: number; baseCycles: number; rangeWidth: number; rangeScale: number }[];
+}
+
+const PLATFORM_PROFILES: Record<Platform, PlatformProfile> = {
+  'cortex-a7': {
+    platform: 'cortex-a7',
+    label: 'Raspberry Pi 2 · Cortex-A7',
+    baseCycles: 7,
+    scalingFactor: 3.0,
+    noiseAmplitude: 1.5,
+    buckets: [
+      { ceiling: 256, baseCycles: 7, rangeWidth: 255, rangeScale: 2.25 },
+      { ceiling: 2048, baseCycles: 12, rangeWidth: 1792, rangeScale: 3.0 },
+      { ceiling: 8192, baseCycles: 20, rangeWidth: 6144, rangeScale: 3.0 },
+      { ceiling: Number.POSITIVE_INFINITY, baseCycles: 30, rangeWidth: 8192, rangeScale: 3.0 },
+    ],
+  },
+  'cortex-m4': {
+    platform: 'cortex-m4',
+    label: 'Embedded · Cortex-M4',
+    baseCycles: 2,
+    scalingFactor: 1.6,
+    noiseAmplitude: 0.8,
+    buckets: [
+      { ceiling: 256, baseCycles: 2, rangeWidth: 255, rangeScale: 1.4 },
+      { ceiling: 2048, baseCycles: 5, rangeWidth: 1792, rangeScale: 1.8 },
+      { ceiling: 8192, baseCycles: 8, rangeWidth: 6144, rangeScale: 1.8 },
+      { ceiling: Number.POSITIVE_INFINITY, baseCycles: 12, rangeWidth: 8192, rangeScale: 1.8 },
+    ],
+  },
+};
+
+let activePlatform: Platform = 'cortex-a7';
+
+export function setActivePlatform(platform: Platform): void {
+  activePlatform = platform;
+}
+
+export function getActivePlatform(): Platform {
+  return activePlatform;
+}
+
+export function getPlatformProfile(platform: Platform = activePlatform): PlatformProfile {
+  return PLATFORM_PROFILES[platform];
+}
+
+export const PLATFORM_LABELS: Record<Platform, string> = {
+  'cortex-a7': PLATFORM_PROFILES['cortex-a7'].label,
+  'cortex-m4': PLATFORM_PROFILES['cortex-m4'].label,
+};
+
+export const TIMING_MODEL = PLATFORM_PROFILES['cortex-a7'];
 
 let noiseCounter = 0;
 
@@ -41,25 +97,29 @@ function nextDeterministicNoise(dividend: number, divisor: number): number {
   state ^= state << 5;
 
   const normalized = (state >>> 0) / 0xffffffff;
-  return (normalized * 2 - 1) * TIMING_MODEL.noiseAmplitude;
+  return (normalized * 2 - 1) * getPlatformProfile().noiseAmplitude;
 }
 
 function bucketedCycles(dividend: number): number {
   const magnitude = Math.abs(Math.trunc(dividend));
+  const profile = getPlatformProfile();
 
-  if (magnitude < 256) {
-    return TIMING_MODEL.baseCycles + (magnitude / 255) * (TIMING_MODEL.scalingFactor * 0.75);
+  for (let index = 0; index < profile.buckets.length; index += 1) {
+    const bucket = profile.buckets[index];
+    if (magnitude < bucket.ceiling) {
+      if (!Number.isFinite(bucket.ceiling)) {
+        return (
+          bucket.baseCycles +
+          clamp(Math.log2(magnitude / bucket.rangeWidth + 1), 0, 1) * bucket.rangeScale
+        );
+      }
+      const previousCeiling = index === 0 ? 0 : profile.buckets[index - 1].ceiling;
+      return bucket.baseCycles + ((magnitude - previousCeiling) / bucket.rangeWidth) * bucket.rangeScale;
+    }
   }
 
-  if (magnitude < 2048) {
-    return 12 + ((magnitude - 256) / (2048 - 256)) * TIMING_MODEL.scalingFactor;
-  }
-
-  if (magnitude < 8192) {
-    return 20 + ((magnitude - 2048) / (8192 - 2048)) * TIMING_MODEL.scalingFactor;
-  }
-
-  return 30 + clamp(Math.log2(magnitude / 8192 + 1), 0, 1) * TIMING_MODEL.scalingFactor;
+  const last = profile.buckets[profile.buckets.length - 1];
+  return last.baseCycles + last.rangeScale;
 }
 
 /**

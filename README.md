@@ -2,6 +2,13 @@
 
 Browser-based educational simulation of the KyberSlash timing attacks on ML-KEM (formerly Kyber). Built with Vite, strict TypeScript, and vanilla CSS for GitHub Pages deployment.
 
+## What You Learn In 3 Minutes
+
+- **The bug**: a single `/ KYBER_Q` on a secret-dependent operand inside `poly_tomsg` and `poly_compress` leaks key bits through CPU `udiv` latency.
+- **The fix**: replace the divide with Barrett reduction (`(x * BARRETT_INV) >> 32`) so the secret path becomes constant-time.
+- **The proof**: an in-browser oscilloscope shows the vulnerable mean swinging while the patched mean is flat, and a live attack reconstructs all 768 ML-KEM-768 secret coefficients into a verified match against the real key.
+- **The point**: NIST standardisation is a mathematical contract; side-channel safety is a separate property and has to be audited per target — Cortex-A7 leaks differently than Cortex-M4, and `-Os` can reintroduce division on platforms x86_64 normally avoids.
+
 ## What It Is
 
 Browser-based educational simulation of the KyberSlash timing attacks on ML-KEM (Kyber), based on the 2025 TCHES CHES Best Paper by Daniel J. Bernstein, Karthikeyan Bhargavan, Shivam Bhasin, Anupam Chattopadhyay, Tee Kiah Chia, Matthias J. Kannwischer, Franziskus Kiefer, Thales B. Paiva, Prasanna Ravi, and Goutam Tamvada. The demo shows how integer division by the Kyber modulus q = 3329 in the reference `poly_tomsg` and `poly_compress` functions leaks secret information through variable CPU timing on ARM Cortex-A7 and Cortex-M4 processors. Because JavaScript cannot measure real CPU division latency reliably, the browser uses a deterministic timing model that reproduces the paper's leakage behavior instead of real clock measurements. The lab shows the vulnerable code, the fixed Barrett-reduction replacement, a live attack simulation that recovers the vulnerable secret key, and the failed attack against the patched implementation.

@@ -1005,6 +1005,10 @@ blockquote footer {
   50% { transform: scale(1.4); }
 }
 
+.exhibit {
+  scroll-margin-top: 80px;
+}
+
 .exhibit-rail {
   position: sticky;
   top: 0;

@@ -612,9 +612,9 @@ function renderHero(): string {
         </p>
         <div class="platform-toggle" role="group" aria-label="Simulated target platform">
           <span class="platform-label">Target platform</span>
-          <button type="button" class="chip ${state.platform === 'cortex-a7' ? 'is-active' : ''}" data-action="set-platform-a7" aria-pressed="${state.platform === 'cortex-a7'}">Cortex-A7</button>
-          <button type="button" class="chip ${state.platform === 'cortex-m4' ? 'is-active' : ''}" data-action="set-platform-m4" aria-pressed="${state.platform === 'cortex-m4'}">Cortex-M4</button>
-          <span class="platform-current">simulating ${escapeHtml(platformLabel)} · click to switch to ${escapeHtml(altLabel)}</span>
+          <button type="button" class="chip ${state.platform === 'cortex-a7' ? 'is-active' : ''}" data-action="set-platform-a7" aria-pressed="${state.platform === 'cortex-a7'}" ${state.attackRunning || state.measuring ? 'disabled' : ''}>Cortex-A7</button>
+          <button type="button" class="chip ${state.platform === 'cortex-m4' ? 'is-active' : ''}" data-action="set-platform-m4" aria-pressed="${state.platform === 'cortex-m4'}" ${state.attackRunning || state.measuring ? 'disabled' : ''}>Cortex-M4</button>
+          <span class="platform-current">${state.attackRunning || state.measuring ? 'platform locked while a run is in progress' : `simulating ${escapeHtml(platformLabel)} · click to switch to ${escapeHtml(altLabel)}`}</span>
         </div>
         <div class="hero-notes">
           <span class="pill pill--danger">KyberSlash1: decapsulation / poly_tomsg</span>
@@ -795,7 +795,7 @@ function renderRecoveryGrid(): string {
     }
     const fresh = index === freshIndex ? ' is-fresh' : '';
     cells.push(
-      `<span class="recovery-cell recovery-cell--${tone}${fresh}" role="gridcell" aria-label="coefficient ${index} ${
+      `<span class="recovery-cell recovery-cell--${tone}${fresh}" role="listitem" aria-label="coefficient ${index} ${
         known ? `recovered as ${value}` : 'not yet recovered'
       }">${glyph}</span>`,
     );
@@ -823,7 +823,7 @@ function renderRecoveryGrid(): string {
         </div>
         ${banner}
       </header>
-      <div class="recovery-grid" role="grid" aria-label="ML-KEM-768 secret key coefficients">
+      <div class="recovery-grid" role="list" aria-label="ML-KEM-768 secret key coefficients">
         ${cells.join('')}
       </div>
       <p class="recovery-legend" aria-hidden="true">
@@ -1111,7 +1111,13 @@ function setupScrollSpy(): void {
         }
       }
       for (const link of links) {
-        link.classList.toggle('is-active', link.dataset.exhibit === activeId);
+        const isActive = link.dataset.exhibit === activeId;
+        link.classList.toggle('is-active', isActive);
+        if (isActive) {
+          link.setAttribute('aria-current', 'location');
+        } else {
+          link.removeAttribute('aria-current');
+        }
       }
     },
     { rootMargin: '-30% 0px -55% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] },

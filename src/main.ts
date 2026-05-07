@@ -4,6 +4,7 @@ import {
   attackIteration,
   createAttackState,
   generateSecretKey,
+  getRecoveredCoeff,
   statisticalAnalysis,
   type AttackState,
   type SecretKey,
@@ -51,32 +52,38 @@ const QUOTE = '"Whether therefore ye eat, or drink, or whatsoever ye do, do all 
 const ATTACK_QUERY_BUDGET = 20000;
 const TRACE_LIMIT = 28;
 
-const VULNERABLE_CODE = `// Kyber reference implementation - poly_tomsg function
-// KyberSlash1, pre-patch reference C code
+type CodeLine = { text: string; hl?: 'danger' | 'safe' };
 
-for (int j = 0; j < 8; j++) {
-    t = a->coeffs[8*i+j];
-    t += ((int16_t)t >> 15) & KYBER_Q;
+const VULNERABLE_LINES: readonly CodeLine[] = [
+  { text: '// Kyber reference implementation - poly_tomsg function' },
+  { text: '// KyberSlash1, pre-patch reference C code' },
+  { text: '' },
+  { text: 'for (int j = 0; j < 8; j++) {' },
+  { text: '    t = a->coeffs[8*i+j];' },
+  { text: '    t += ((int16_t)t >> 15) & KYBER_Q;' },
+  { text: '' },
+  { text: '    // Secret-dependent division by q = 3329' },
+  { text: '    t = (((t << 1) + KYBER_Q/2) / KYBER_Q) & 1;', hl: 'danger' },
+  { text: '' },
+  { text: '    msg[i] |= t << j;' },
+  { text: '}' },
+];
 
-    // Secret-dependent division by q = 3329
-    t = (((t << 1) + KYBER_Q/2) / KYBER_Q) & 1;
-
-    msg[i] |= t << j;
-}`;
-
-const PATCHED_CODE = `// Patched constant-time version - Barrett reduction
-// BARRETT_INV = floor(2^32 / 3329) + 1 = ${BARRETT_INV_Q}
-
-for (int j = 0; j < 8; j++) {
-    t = a->coeffs[8*i+j];
-    t += ((int16_t)t >> 15) & KYBER_Q;
-
-    // No division instruction on secret data
-    t = ((((uint32_t)t << 1) + KYBER_Q/2)
-         * BARRETT_INV >> 32) & 1;
-
-    msg[i] |= t << j;
-}`;
+const PATCHED_LINES: readonly CodeLine[] = [
+  { text: '// Patched constant-time version - Barrett reduction' },
+  { text: `// BARRETT_INV = floor(2^32 / 3329) + 1 = ${BARRETT_INV_Q}` },
+  { text: '' },
+  { text: 'for (int j = 0; j < 8; j++) {' },
+  { text: '    t = a->coeffs[8*i+j];' },
+  { text: '    t += ((int16_t)t >> 15) & KYBER_Q;' },
+  { text: '' },
+  { text: '    // No division instruction on secret data' },
+  { text: '    t = ((((uint32_t)t << 1) + KYBER_Q/2)', hl: 'safe' },
+  { text: '         * BARRETT_INV >> 32) & 1;', hl: 'safe' },
+  { text: '' },
+  { text: '    msg[i] |= t << j;' },
+  { text: '}' },
+];
 
 const TIMELINE = [
   ['2022 Jul', 'NIST selects Kyber for post-quantum standardization.'],
@@ -416,8 +423,18 @@ function renderHero(): string {
     </section>`;
 }
 
+function renderCodeLines(lines: readonly CodeLine[]): string {
+  return lines
+    .map((line) => {
+      const text = line.text.length === 0 ? ' ' : escapeHtml(line.text);
+      const cls = line.hl ? ` code-line--hl-${line.hl}` : '';
+      return `<span class="code-line${cls}">${text}</span>`;
+    })
+    .join('\n');
+}
+
 function renderSmokingGun(): string {
-  const code = state.codeMode === 'vulnerable' ? VULNERABLE_CODE : PATCHED_CODE;
+  const lines = state.codeMode === 'vulnerable' ? VULNERABLE_LINES : PATCHED_LINES;
   const annotations =
     state.codeMode === 'vulnerable'
       ? [
@@ -442,7 +459,7 @@ function renderSmokingGun(): string {
         <button type="button" class="chip ${state.codeMode === 'patched' ? 'is-active' : ''}" data-action="code-patched" aria-pressed="${state.codeMode === 'patched'}">Patched Barrett reduction</button>
       </div>
       <div class="code-card ${state.codeMode === 'vulnerable' ? 'is-danger' : 'is-safe'}">
-        <pre><code>${escapeHtml(code)}</code></pre>
+        <pre><code>${renderCodeLines(lines)}</code></pre>
       </div>
       <ul class="evidence-list">${annotations.map((item) => `<li>${item}</li>`).join('')}</ul>
     </section>`;
@@ -503,6 +520,79 @@ function renderOscilloscope(): string {
     </section>`;
 }
 
+function renderRecoveryGrid(): string {
+  const total = state.attackSecret.coeffs.length;
+  const recovered = state.attackState.currentCoefficient;
+  const freshIndex =
+    state.attackEvents.length > 0 && state.attackMode === 'vulnerable'
+      ? state.attackEvents[0].coefficient
+      : -1;
+
+  let matches = 0;
+  let assessable = 0;
+
+  const cells: string[] = [];
+  for (let index = 0; index < total; index += 1) {
+    const value = getRecoveredCoeff(state.attackState, index);
+    const known = value !== null;
+    const truth = state.attackSecret.coeffs[index];
+    const tone = !known
+      ? 'unknown'
+      : value === 1
+        ? 'pos'
+        : value === -1
+          ? 'neg'
+          : 'zero';
+    const glyph = !known ? '·' : value === 1 ? '+' : value === -1 ? '−' : '0';
+    if (known) {
+      assessable += 1;
+      if (value === truth) {
+        matches += 1;
+      }
+    }
+    const fresh = index === freshIndex ? ' is-fresh' : '';
+    cells.push(
+      `<span class="recovery-cell recovery-cell--${tone}${fresh}" role="gridcell" aria-label="coefficient ${index} ${
+        known ? `recovered as ${value}` : 'not yet recovered'
+      }">${glyph}</span>`,
+    );
+  }
+
+  const complete = recovered === total;
+  const accuracyPct = assessable > 0 ? (matches / assessable) * 100 : 0;
+  let banner = '';
+  if (state.attackMode === 'patched') {
+    banner = `<span class="match-pill match-pill--neutral">Patched path · zero coefficients leaked</span>`;
+  } else if (complete && matches === total) {
+    banner = `<span class="match-pill match-pill--total">Recovered key matches secret · ${matches} / ${total} (100%)</span>`;
+  } else if (complete) {
+    banner = `<span class="match-pill match-pill--partial">Recovered ${matches} / ${total} (${formatDecimal(accuracyPct, 1)}%)</span>`;
+  } else if (assessable > 0) {
+    banner = `<span class="match-pill match-pill--running">${matches} / ${assessable} verified · attack in progress</span>`;
+  }
+
+  return `
+    <section class="recovery-section" aria-label="Secret key recovery status">
+      <header class="recovery-header">
+        <div>
+          <p class="mini-label">Secret key recovery</p>
+          <strong>${recovered} / ${total} coefficients revealed</strong>
+        </div>
+        ${banner}
+      </header>
+      <div class="recovery-grid" role="grid" aria-label="ML-KEM-768 secret key coefficients">
+        ${cells.join('')}
+      </div>
+      <p class="recovery-legend" aria-hidden="true">
+        <span class="recovery-cell recovery-cell--unknown" aria-hidden="true">·</span> unknown
+        <span class="recovery-cell recovery-cell--neg" aria-hidden="true">−</span> −1
+        <span class="recovery-cell recovery-cell--zero" aria-hidden="true">0</span> 0
+        <span class="recovery-cell recovery-cell--pos" aria-hidden="true">+</span> +1
+        <span class="recovery-cell recovery-cell--pos is-fresh" aria-hidden="true">+</span> just recovered
+      </p>
+    </section>`;
+}
+
 function renderAttack(): string {
   const analysis = statisticalAnalysis(state.attackState.timingProfile);
   const displayedMode = state.attackMode === 'vulnerable' ? 'YES' : 'PATCHED';
@@ -527,6 +617,7 @@ function renderAttack(): string {
           <button type="button" class="chip ${state.attackMode === 'patched' ? 'is-active' : ''}" data-action="mode-patched" aria-pressed="${state.attackMode === 'patched'}">Patched path</button>
         </div>
       </div>
+      ${renderRecoveryGrid()}
       <div class="attack-layout">
         <div class="attack-card">
           <p class="attack-line"><span>Target:</span><strong>ML-KEM-768 secret key, 768 coefficients</strong></p>
@@ -554,6 +645,7 @@ function renderAttack(): string {
           </div>
           <div class="controls-row compact">
             <button type="button" class="control subtle" data-action="switch-implementation">Switch to ${state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable'} implementation</button>
+            <button type="button" class="control subtle" data-action="regenerate-key" ${state.attackRunning ? 'disabled' : ''}>Generate new target key</button>
           </div>
         </div>
         <div class="attack-card attack-card--secondary" aria-live="polite">
@@ -645,16 +737,29 @@ function render(focusTarget?: string): void {
       : undefined;
   const nextFocusTarget = focusTarget ?? activeAction;
 
+  const themeGlyph = state.theme === 'light' ? '☾' : '☀';
+  const themeNext = state.theme === 'light' ? 'dark' : 'light';
+
   app.innerHTML = `
     <a class="skip-link" href="#main-content">Skip to main content</a>
+    <header class="cl-header">
+      <div class="cl-header-left">
+        <a class="cl-badge" href="https://crypto-lab.systemslibrarian.dev/" target="_blank" rel="noopener" aria-label="Crypto Lab home">CL</a>
+        <div class="cl-header-text">
+          <span class="cl-title">CRYPTO LAB</span>
+          <a class="cl-sub" href="https://crypto-lab.systemslibrarian.dev/" target="_blank" rel="noopener">kyberslash · systemslibrarian.dev</a>
+        </div>
+      </div>
+      <nav class="cl-header-nav" aria-label="Header navigation">
+        <a class="cl-nav-btn" href="https://github.com/systemslibrarian/crypto-lab-kyberslash" target="_blank" rel="noopener">GitHub</a>
+        <button type="button" class="cl-theme-toggle" data-action="toggle-theme" aria-label="Switch to ${themeNext} mode">${themeGlyph}</button>
+      </nav>
+    </header>
     <main id="main-content" class="lab-shell" tabindex="-1">
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.statusMessage)}</div>
       <header class="topbar">
-        <div>
-          <p class="topbar-label">Educational side-channel lab</p>
-          <strong>ML-KEM-768 / Kyber768 parameters: n=${KYBER_PARAMS.n}, k=${KYBER_PARAMS.k}, q=${KYBER_PARAMS.q}, eta1=${KYBER_PARAMS.eta1}, eta2=${KYBER_PARAMS.eta2}, du=${KYBER_PARAMS.du}, dv=${KYBER_PARAMS.dv}</strong>
-        </div>
-        <button type="button" class="theme-toggle" data-action="toggle-theme" aria-pressed="${state.theme === 'dark'}" aria-label="Toggle color theme. Current theme ${state.theme}.">Theme: ${state.theme}</button>
+        <p class="topbar-label">Educational side-channel lab</p>
+        <strong>ML-KEM-768 / Kyber768 parameters: n=${KYBER_PARAMS.n}, k=${KYBER_PARAMS.k}, q=${KYBER_PARAMS.q}, eta1=${KYBER_PARAMS.eta1}, eta2=${KYBER_PARAMS.eta2}, du=${KYBER_PARAMS.du}, dv=${KYBER_PARAMS.dv}</strong>
       </header>
       ${renderHero()}
       <section class="status-strip">
@@ -670,7 +775,18 @@ function render(focusTarget?: string): void {
       ${renderLessons()}
       <footer class="footer-note">
         <p>JavaScript cannot measure the real timing of CPU division instructions reliably. This demo therefore uses a deterministic leakage model aligned with the published KyberSlash paper rather than browser timing APIs.</p>
+        <p class="citation">
+          <span>Reference</span>
+          Bernstein, Bhargavan, Bhasin, Chattopadhyay, Chia, Kannwischer, Kiefer, Paiva, Ravi, Tamvada — “KyberSlash: Exploiting secret-dependent division timings in Kyber implementations,” IACR TCHES 2025(2): 209–234. CHES 2025 Best Paper Award.
+          <a href="https://eprint.iacr.org/2024/1049" target="_blank" rel="noopener">eprint.iacr.org/2024/1049</a>
+          ·
+          <a href="https://github.com/systemslibrarian/crypto-lab-kyberslash" target="_blank" rel="noopener">source on GitHub</a>
+        </p>
       </footer>
+      <div class="live-status" aria-hidden="true">
+        <span class="live-status__dot ${state.attackRunning || state.measuring ? 'is-active' : ''}"></span>
+        <span class="live-status__text">${escapeHtml(state.statusMessage)}</span>
+      </div>
     </main>`;
 
   if (nextFocusTarget) {
@@ -741,6 +857,15 @@ app.addEventListener('click', (event) => {
     case 'switch-implementation':
       resetAttack(state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable');
       render('switch-implementation');
+      break;
+    case 'regenerate-key':
+      if (state.attackRunning) {
+        break;
+      }
+      state.attackSecret = generateSecretKey();
+      resetAttack(state.attackMode);
+      setStatusMessage('Generated a new ML-KEM-768 secret key. Attack state reset.');
+      render('regenerate-key');
       break;
     default:
       break;

@@ -143,6 +143,24 @@ export function recoveredKeyFromState(state: AttackState): SecretKey | null {
 }
 
 /**
+ * Read a recovered coefficient if the attack has reached it.
+ * Returns null when the index has not yet been processed.
+ */
+export function getRecoveredCoeff(state: AttackState, index: number): number | null {
+  if (index < 0 || index >= state.targetKey.coeffs.length) {
+    return null;
+  }
+  if (index >= state.currentCoefficient) {
+    return null;
+  }
+  const metadata = stateMetadata.get(state);
+  if (!metadata) {
+    return null;
+  }
+  return metadata.recovered[index];
+}
+
+/**
  * Statistical test: can we distinguish the secret key bits from the
  * timing measurements?
  */

@@ -4,18 +4,35 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0e1f1e" />
     <meta
       name="description"
       content="Browser-based educational simulation of the KyberSlash timing attacks on ML-KEM, showing vulnerable division-by-q code, the Barrett-reduction fix, and a deterministic in-browser attack model."
     />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="KyberSlash — ML-KEM Timing Attack Lab" />
+    <meta
+      property="og:description"
+      content="A browser-only educational lab reproducing the KyberSlash side-channel attack on ML-KEM (Kyber) and the Barrett-reduction patch."
+    />
+    <meta property="og:image" content="./favicon.svg" />
+    <meta name="twitter:card" content="summary" />
     <script>
       const saved = localStorage.getItem('theme');
       document.documentElement.setAttribute('data-theme', saved ?? 'dark');
     </script>
-    <title>crypto-lab-kyberslash</title>
+    <title>KyberSlash — ML-KEM Timing Attack Lab · Crypto Lab</title>
   </head>
   <body>
     <div id="app"></div>
+    <noscript>
+      <p style="max-width:42rem;margin:48px auto;padding:18px 22px;font-family:system-ui,sans-serif;line-height:1.6;border:1px solid #2a4a44;border-radius:12px;background:#0e1f1e;color:#e8f5f2;">
+        This is an interactive cryptography lab and requires JavaScript to run the
+        timing-model simulation. Source and write-up:
+        <a style="color:#4dcfb0;" href="https://github.com/systemslibrarian/crypto-lab-kyberslash">github.com/systemslibrarian/crypto-lab-kyberslash</a>.
+      </p>
+    </noscript>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

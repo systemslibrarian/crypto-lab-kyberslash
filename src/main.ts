@@ -27,6 +27,8 @@ import {
 type ThemeMode = 'dark' | 'light';
 type CodeMode = 'vulnerable' | 'patched';
 type AttackMode = 'vulnerable' | 'patched';
+type FlipMode = 'before' | 'after';
+type AttackSpeed = 1 | 4 | 16;
 type LogKind = 'info' | 'recovery' | 'milestone' | 'warning' | 'success';
 
 interface RecoveryEvent {
@@ -51,8 +53,12 @@ interface AppState {
   measurementIndex: number;
   vulnerableSamples: number[];
   patchedSamples: number[];
+  flipMode: FlipMode;
   attackMode: AttackMode;
+  attackSpeed: AttackSpeed;
   attackRunning: boolean;
+  tourRunning: boolean;
+  tourStopRequested: boolean;
   attackStopRequested: boolean;
   attackRunId: number;
   attackSecret: SecretKey;
@@ -263,8 +269,12 @@ const state: AppState = {
   measurementIndex: 0,
   vulnerableSamples: [],
   patchedSamples: [],
+  flipMode: 'before',
   attackMode: 'vulnerable',
+  attackSpeed: 1,
   attackRunning: false,
+  tourRunning: false,
+  tourStopRequested: false,
   attackStopRequested: false,
   attackRunId: 0,
   attackSecret: initialSecret,
@@ -398,6 +408,96 @@ function histogram(values: number[], bins: number): number[] {
   return counts;
 }
 
+function buildSharedScalePolyline(values: number[], minimum: number, range: number): string {
+  if (values.length === 0) {
+    return '';
+  }
+  return values
+    .map((value, index) => {
+      const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100;
+      const y = 36 - ((value - minimum) / range) * 32;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(' ');
+}
+
+function renderFlipOverlay(): string {
+  const pairs = Math.min(state.vulnerableSamples.length, state.patchedSamples.length);
+  const vulnerable = state.vulnerableSamples.slice(0, pairs);
+  const patched = state.patchedSamples.slice(0, pairs);
+  const ready = pairs >= 6;
+
+  const unionMin = ready ? Math.min(...vulnerable, ...patched) : 0;
+  const unionMax = ready ? Math.max(...vulnerable, ...patched) : 1;
+  const unionRange = Math.max(unionMax - unionMin, 1);
+
+  const vulnerableMean = ready ? vulnerable.reduce((sum, v) => sum + v, 0) / vulnerable.length : 0;
+  const patchedMean = ready ? patched.reduce((sum, v) => sum + v, 0) / patched.length : 0;
+  const vulnerableSpread = ready ? Math.max(...vulnerable) - Math.min(...vulnerable) : 0;
+  const patchedSpread = ready ? Math.max(...patched) - Math.min(...patched) : 0;
+  const spreadCollapse = vulnerableSpread > 0 ? 1 - patchedSpread / vulnerableSpread : 0;
+  const meanDelta = Math.max(0, vulnerableMean - patchedMean);
+
+  const vulnerablePoints = buildSharedScalePolyline(vulnerable, unionMin, unionRange);
+  const patchedPoints = buildSharedScalePolyline(patched, unionMin, unionRange);
+
+  const stage = `flip-stage--${state.flipMode}`;
+  const flipState = state.flipMode === 'before' ? 'vulnerable' : 'patched';
+
+  if (!ready) {
+    return `
+      <article class="flip-stage flip-stage--idle" aria-label="Flip-to-patched signature interaction">
+        <header class="flip-header">
+          <span class="flip-eyebrow">Signature moment</span>
+          <h3>Flip to patched · same dataset, same axes</h3>
+        </header>
+        <p class="flip-hint">Run the 100-measurement batch above first, then flip below to see the signal disappear on the same chart.</p>
+      </article>`;
+  }
+
+  return `
+    <article class="flip-stage ${stage}" aria-label="Flip-to-patched signature interaction">
+      <header class="flip-header">
+        <span class="flip-eyebrow">Signature moment</span>
+        <h3>Flip to patched · same dataset, same axes</h3>
+        <p class="flip-sub">${pairs} matched decapsulations. Same coefficient vectors. One Y-axis. ${state.flipMode === 'after' ? 'The signal vanished.' : 'Now flip the implementation.'}</p>
+      </header>
+      <div class="flip-controls" role="group" aria-label="Toggle implementation on overlay">
+        <button type="button" class="chip ${state.flipMode === 'before' ? 'is-active' : ''}" data-action="flip-before" aria-pressed="${state.flipMode === 'before'}">Vulnerable path</button>
+        <button type="button" class="chip ${state.flipMode === 'after' ? 'is-active' : ''}" data-action="flip-after" aria-pressed="${state.flipMode === 'after'}">Flip to patched</button>
+      </div>
+      <div class="flip-chart" data-flip="${flipState}">
+        <svg viewBox="0 0 100 40" class="flip-svg" role="img" aria-label="Overlay of vulnerable and patched timing on a shared scale">
+          <line x1="0" y1="36" x2="100" y2="36" class="flip-axis" />
+          <polyline points="${vulnerablePoints}" class="flip-line flip-line--vulnerable" />
+          <polyline points="${patchedPoints}" class="flip-line flip-line--patched" />
+        </svg>
+        <div class="flip-legend" aria-hidden="true">
+          <span class="flip-swatch flip-swatch--vulnerable"></span> vulnerable
+          <span class="flip-swatch flip-swatch--patched"></span> patched
+        </div>
+      </div>
+      <dl class="flip-readout">
+        <div>
+          <dt>Vulnerable spread</dt>
+          <dd>${formatInteger(vulnerableSpread)} cycles</dd>
+        </div>
+        <div>
+          <dt>Patched spread</dt>
+          <dd>${formatInteger(patchedSpread)} cycles</dd>
+        </div>
+        <div>
+          <dt>Spread collapse</dt>
+          <dd>${formatDecimal(Math.max(0, spreadCollapse) * 100, 1)}%</dd>
+        </div>
+        <div>
+          <dt>Mean shift</dt>
+          <dd>${formatInteger(meanDelta)} cycles</dd>
+        </div>
+      </dl>
+    </article>`;
+}
+
 function createHistogram(): string {
   const vulnerable = histogram(state.vulnerableSamples, 10);
   const patched = histogram(state.patchedSamples, 10);
@@ -507,7 +607,8 @@ async function startAttack(): Promise<void> {
     state.attackState.currentCoefficient < state.attackSecret.coeffs.length &&
     state.attackState.queries < ATTACK_QUERY_BUDGET
   ) {
-    for (let batch = 0; batch < 80; batch += 1) {
+    const batchSize = 80 * state.attackSpeed;
+    for (let batch = 0; batch < batchSize; batch += 1) {
       if (
         state.attackStopRequested ||
         runId !== state.attackRunId ||
@@ -558,6 +659,99 @@ async function startAttack(): Promise<void> {
   render('launch-attack');
 }
 
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+function scrollToExhibit(id: string): void {
+  const target = document.getElementById(id);
+  if (target instanceof HTMLElement) {
+    target.scrollIntoView({
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+      block: 'start',
+    });
+  }
+}
+
+function tourDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function runTour(): Promise<void> {
+  if (state.tourRunning) {
+    return;
+  }
+  state.tourRunning = true;
+  state.tourStopRequested = false;
+  state.attackSpeed = 16;
+  setStatusMessage('Auto-tour starting · 30 second walkthrough of all five exhibits.');
+  render();
+
+  const guard = (): boolean => !state.tourStopRequested;
+
+  scrollToExhibit('exhibit-1');
+  await tourDelay(3500);
+  if (!guard()) return endTour('Tour stopped.');
+
+  scrollToExhibit('exhibit-2');
+  await tourDelay(800);
+  if (!guard()) return endTour('Tour stopped.');
+  await runMeasurementBatch(60, 'run-hundred');
+  if (!guard()) return endTour('Tour stopped.');
+  await tourDelay(600);
+
+  state.flipMode = 'before';
+  setStatusMessage('Tour · showing the vulnerable signal on the shared scale.');
+  render();
+  await tourDelay(2200);
+  if (!guard()) return endTour('Tour stopped.');
+
+  state.flipMode = 'after';
+  setStatusMessage('Tour · flipping to patched — same dataset, signal vanishes.');
+  render();
+  await tourDelay(2800);
+  if (!guard()) return endTour('Tour stopped.');
+
+  scrollToExhibit('exhibit-3');
+  await tourDelay(700);
+  if (!guard()) return endTour('Tour stopped.');
+  state.attackMode = 'vulnerable';
+  resetAttack('vulnerable');
+  render();
+  await startAttack();
+  if (!guard()) return endTour('Tour stopped.');
+  await tourDelay(900);
+
+  scrollToExhibit('exhibit-4');
+  await tourDelay(3200);
+  if (!guard()) return endTour('Tour stopped.');
+
+  scrollToExhibit('exhibit-5');
+  await tourDelay(3000);
+
+  endTour('Tour complete · scroll up to revisit any exhibit.');
+}
+
+function endTour(message: string): void {
+  state.tourRunning = false;
+  state.tourStopRequested = false;
+  setStatusMessage(message);
+  render();
+}
+
+function stopTour(): void {
+  if (!state.tourRunning) {
+    return;
+  }
+  state.tourStopRequested = true;
+  state.attackStopRequested = true;
+  setStatusMessage('Stopping auto-tour.');
+  render();
+}
+
 function exportSamples(): void {
   const analysis = statisticalAnalysis(state.attackState.timingProfile);
   const payload = {
@@ -605,7 +799,7 @@ function renderBridge(index: number): string {
     return '';
   }
   return `
-    <aside class="bridge" aria-hidden="true">
+    <aside class="bridge" role="note" aria-label="Bridge between exhibits">
       <div class="bridge-row">
         <span class="bridge-label">Just proved</span>
         <p>${bridge.proved}</p>
@@ -632,6 +826,15 @@ function renderHero(): string {
         <p class="lead">
           This page walks through the bug, the one-line patch, and a live in-browser attack that recovers all 768 coefficients of an ML-KEM-768 secret key. <strong>Work down through Exhibits 1–5 below — each one tells you exactly what to click.</strong>
         </p>
+        <div class="hero-cta" role="group" aria-label="Auto-tour controls">
+          ${
+            state.tourRunning
+              ? `<button type="button" class="control control--primary" data-action="stop-tour">Stop tour</button>
+                 <span class="hero-cta-hint">Auto-tour running — sit back, it scrolls and runs everything.</span>`
+              : `<button type="button" class="control control--primary" data-action="start-tour">▶ Take the 30-second tour</button>
+                 <span class="hero-cta-hint">Auto-scrolls the five exhibits, runs the measurements, flips to patched, and recovers the key at 16×.</span>`
+          }
+        </div>
         <div class="platform-toggle" role="group" aria-label="Simulated target platform">
           <span class="platform-label">Target platform</span>
           <button type="button" class="chip ${state.platform === 'cortex-a7' ? 'is-active' : ''}" data-action="set-platform-a7" aria-pressed="${state.platform === 'cortex-a7'}" ${state.attackRunning || state.measuring ? 'disabled' : ''}>Cortex-A7</button>
@@ -695,6 +898,12 @@ function renderSmokingGun(): string {
         <pre><code>${renderCodeLines(lines)}</code></pre>
       </div>
       <ul class="evidence-list">${annotations.map((item) => `<li>${item}</li>`).join('')}</ul>
+      <footer class="code-citations" aria-label="Where this code lives upstream">
+        <span class="citations-label">Upstream</span>
+        <a class="citation-chip" href="https://github.com/pq-crystals/kyber/blob/main/ref/poly.c" target="_blank" rel="noopener">pq-crystals/kyber · ref/poly.c</a>
+        <a class="citation-chip" href="https://eprint.iacr.org/2024/1049" target="_blank" rel="noopener">KyberSlash paper · eprint 2024/1049</a>
+        <a class="citation-chip" href="https://csrc.nist.gov/pubs/fips/203/final" target="_blank" rel="noopener">FIPS 203 · ML-KEM standard</a>
+      </footer>
     </section>`;
 }
 
@@ -775,6 +984,7 @@ function renderOscilloscope(): string {
           </footer>
         </article>
       </div>
+      ${renderFlipOverlay()}
       ${
         state.showDistribution
           ? `<div class="distribution-card"><div class="histogram">${createHistogram()}</div><p class="distribution-caption">Red bars stay wide because secret-dependent division timing moves with the operand. Green bars collapse into a flat cluster because Barrett reduction keeps the path constant-time.</p></div>`
@@ -888,6 +1098,13 @@ function renderAttack(): string {
           <button type="button" class="chip ${state.attackMode === 'vulnerable' ? 'is-active' : ''}" data-action="mode-vulnerable" aria-pressed="${state.attackMode === 'vulnerable'}">Vulnerable path</button>
           <button type="button" class="chip ${state.attackMode === 'patched' ? 'is-active' : ''}" data-action="mode-patched" aria-pressed="${state.attackMode === 'patched'}">Patched path</button>
         </div>
+      </div>
+      <div class="speed-row" role="group" aria-label="Attack playback speed">
+        <span class="speed-label">Playback speed</span>
+        <button type="button" class="chip chip--speed ${state.attackSpeed === 1 ? 'is-active' : ''}" data-action="speed-1" aria-pressed="${state.attackSpeed === 1}">1×</button>
+        <button type="button" class="chip chip--speed ${state.attackSpeed === 4 ? 'is-active' : ''}" data-action="speed-4" aria-pressed="${state.attackSpeed === 4}">4×</button>
+        <button type="button" class="chip chip--speed ${state.attackSpeed === 16 ? 'is-active' : ''}" data-action="speed-16" aria-pressed="${state.attackSpeed === 16}">16×</button>
+        <span class="speed-hint">${state.attackSpeed === 1 ? 'real-time streaming' : state.attackSpeed === 4 ? 'enough to skim a recovery' : 'fast-forward to the verified match'}</span>
       </div>
       ${renderRecoveryGrid()}
       <div class="attack-layout">
@@ -1007,7 +1224,8 @@ function renderLessons(): string {
         </article>
       </div>
       <div class="crosslinks">
-        <h3>Cross-links in the suite</h3>
+        <p class="kicker kicker--sub">Crypto Lab suite</p>
+        <h3>Neighbouring exhibits worth a click</h3>
         <div class="crosslink-grid">
           ${CROSSLINKS.map(
             (link) => `
@@ -1146,6 +1364,12 @@ function setupScrollSpy(): void {
           link.removeAttribute('aria-current');
         }
       }
+      if (activeId && window.history && typeof window.history.replaceState === 'function') {
+        const desiredHash = `#exhibit-${activeId}`;
+        if (window.location.hash !== desiredHash) {
+          window.history.replaceState(null, '', desiredHash);
+        }
+      }
     },
     { rootMargin: '-30% 0px -55% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] },
   );
@@ -1190,6 +1414,41 @@ app.addEventListener('click', (event) => {
       state.showDistribution = !state.showDistribution;
       setStatusMessage(`${state.showDistribution ? 'Showing' : 'Hiding'} timing distribution histogram.`);
       render('toggle-distribution');
+      break;
+    case 'flip-before':
+      if (state.flipMode !== 'before') {
+        state.flipMode = 'before';
+        setStatusMessage('Overlay showing vulnerable timing on the shared scale.');
+        render('flip-before');
+      }
+      break;
+    case 'flip-after':
+      if (state.flipMode !== 'after') {
+        state.flipMode = 'after';
+        setStatusMessage('Flipped to patched — same dataset, signal vanished on the shared scale.');
+        render('flip-after');
+      }
+      break;
+    case 'speed-1':
+      state.attackSpeed = 1;
+      setStatusMessage('Playback speed: 1× (real-time).');
+      render('speed-1');
+      break;
+    case 'speed-4':
+      state.attackSpeed = 4;
+      setStatusMessage('Playback speed: 4×.');
+      render('speed-4');
+      break;
+    case 'speed-16':
+      state.attackSpeed = 16;
+      setStatusMessage('Playback speed: 16× (fast-forward).');
+      render('speed-16');
+      break;
+    case 'start-tour':
+      void runTour();
+      break;
+    case 'stop-tour':
+      stopTour();
       break;
     case 'mode-vulnerable':
       resetAttack('vulnerable');
@@ -1258,3 +1517,20 @@ for (let index = 0; index < 6; index += 1) {
 }
 
 render();
+
+const initialHash = window.location.hash;
+if (initialHash && /^#exhibit-[1-5]$/.test(initialHash)) {
+  requestAnimationFrame(() => {
+    const target = document.querySelector(initialHash);
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ behavior: 'auto', block: 'start' });
+    }
+  });
+}
+
+if (typeof window.matchMedia === 'function') {
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  motionQuery.addEventListener?.('change', () => {
+    setStatusMessage(motionQuery.matches ? 'Reduced motion enabled.' : 'Reduced motion disabled.');
+  });
+}

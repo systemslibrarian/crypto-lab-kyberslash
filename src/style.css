@@ -356,9 +356,6 @@ pre {
 }
 
 .hero-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-  gap: 24px;
   padding: 32px;
   margin-top: 22px;
 }
@@ -413,11 +410,6 @@ pre {
 
 .pill--safe {
   color: var(--safe);
-}
-
-.hero-side {
-  display: grid;
-  gap: 18px;
 }
 
 blockquote {
@@ -1804,10 +1796,6 @@ blockquote footer {
 }
 
 @media (max-width: 1080px) {
-  .hero-shell {
-    grid-template-columns: 1fr;
-  }
-
   .topbar,
   .trace-card header,
   .attack-summary {

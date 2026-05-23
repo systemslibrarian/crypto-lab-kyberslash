@@ -824,7 +824,7 @@ function renderHero(): string {
           ML-KEM (formerly Kyber) is the post-quantum encryption replacing RSA in TLS and NIST <strong>FIPS 203</strong>. Its reference C code passed years of review before standardisation. But on a $35 Raspberry Pi, a single line of math took different amounts of time depending on the secret value being processed — and that timing gap alone was enough to recover the entire key.
         </p>
         <p class="lead">
-          This page walks through the bug, the one-line patch, and a live in-browser attack that recovers all 768 coefficients of an ML-KEM-768 secret key. <strong>Work down through Exhibits 1–5 below — each one tells you exactly what to click.</strong>
+          This page walks through the bug, the one-line patch, and a live in-browser attack that recovers all 768 coefficients of an ML-KEM-768 secret key — KyberSlash2 falls in minutes, KyberSlash1 in hours. <strong>Work down through Exhibits 1–5 below — each one tells you exactly what to click.</strong>
         </p>
         <div class="hero-cta" role="group" aria-label="Auto-tour controls">
           ${
@@ -847,14 +847,6 @@ function renderHero(): string {
           <span class="pill pill--safe">Patched before disclosure</span>
         </div>
       </div>
-      <aside class="hero-side">
-        <div class="fact-grid">
-          <article><span>Platform</span><strong>Raspberry Pi 2, Cortex-A7</strong></article>
-          <article><span>Embedded target</span><strong>ARM Cortex-M4</strong></article>
-          <article><span>Fast attack</span><strong>Minutes for KyberSlash2</strong></article>
-          <article><span>Slower attack</span><strong>Hours for KyberSlash1</strong></article>
-        </div>
-      </aside>
     </section>`;
 }
 

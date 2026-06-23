@@ -1,6 +1,8 @@
 # Capture instructions
 
-These are the two media files referenced from the top of the main `README.md`. Drop them into this folder when recorded.
+Two **optional** animated/still captures that upgrade the README. The README already
+renders without them (it ships `public/poster.svg` as the hero and social card); drop
+these into `docs/` and add them back into the Highlights section when recorded.
 
 ## docs/flip-to-patched.gif
 

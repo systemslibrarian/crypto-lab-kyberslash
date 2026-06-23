@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Headless UI test screenshots
+scripts/shot-*.png
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

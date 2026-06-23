@@ -250,8 +250,6 @@ if (!appRoot) {
 
 const app = appRoot;
 
-document.title = 'KyberSlash Timing Attack on ML-KEM';
-
 const initialTheme = (document.documentElement.getAttribute('data-theme') ?? 'dark') as ThemeMode;
 const initialPlatform: Platform = (() => {
   const stored = localStorage.getItem('platform');
@@ -294,13 +292,6 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-}
-
-function setTheme(theme: ThemeMode): void {
-  state.theme = theme;
-  document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('theme', theme);
-  state.statusMessage = `Theme changed to ${theme} mode.`;
 }
 
 function setStatusMessage(message: string): void {
@@ -584,6 +575,57 @@ function pushAttackEvent(coefficient: number, value: number): void {
   ].slice(0, 4);
 }
 
+/**
+ * Repaint only the dynamic display regions of Exhibit 3 on each animation frame —
+ * the milestone strip, recovery grid, meters, trace, correlation box, and log.
+ *
+ * Deliberately does NOT rebuild the whole page (wasteful) or even the whole
+ * exhibit subtree: the control buttons (Stop, speed, mode, export…) keep their
+ * DOM nodes, so a mouse click is never dropped by a repaint that lands between
+ * pointerdown and pointerup. Their disabled state only changes at run start/end,
+ * which the full render() at those boundaries handles.
+ */
+function paintAttackExhibit(): void {
+  const exhibit = document.getElementById('exhibit-3');
+  if (!exhibit) {
+    render();
+    return;
+  }
+
+  const milestones = exhibit.querySelector('.milestone-strip');
+  if (milestones) {
+    milestones.innerHTML = renderMilestoneStripInner();
+  }
+
+  // The recovery section holds no controls, so replacing it wholesale is safe.
+  const recovery = exhibit.querySelector('.recovery-section');
+  if (recovery) {
+    recovery.outerHTML = renderRecoveryGrid();
+  }
+
+  const meters = exhibit.querySelector('.meter-stack');
+  if (meters) {
+    meters.innerHTML = renderMeterStackInner();
+  }
+
+  const trace = exhibit.querySelector('.attack-trace-host');
+  if (trace) {
+    trace.innerHTML = renderAttackTraceInner();
+  }
+
+  const analysis = exhibit.querySelector('.analysis-box');
+  if (analysis) {
+    analysis.innerHTML = renderAnalysisBoxInner();
+  }
+
+  const log = exhibit.querySelector('.attack-log');
+  if (log) {
+    log.innerHTML = renderAttackLogInner();
+  }
+
+  exhibit.setAttribute('aria-busy', String(state.attackRunning));
+}
+
 async function startAttack(): Promise<void> {
   if (state.attackRunning) {
     return;
@@ -632,7 +674,7 @@ async function startAttack(): Promise<void> {
       }
     }
 
-    render();
+    paintAttackExhibit();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }
 
@@ -913,7 +955,19 @@ function renderOscilloscope(): string {
   const patchedMean = patchedStats.value;
   const deltaCycles = Math.max(0, vulnerableMean - patchedMean);
   const ratio = patchedMean > 0 ? vulnerableMean / patchedMean : 0;
-  const spreadRatio = patchedVariance > 0 ? vulnerableVariance / patchedVariance : 0;
+  // The patched path is constant-time, so its spread collapses to exactly zero.
+  // A swinging vulnerable path against a zero-variance patched path is the
+  // strongest possible signal (an infinite ratio) — not an "edge case". Guard
+  // the divide-by-zero so the verdict fires "leak" instead of reading 0×.
+  const spreadRatio =
+    patchedVariance > 0
+      ? vulnerableVariance / patchedVariance
+      : vulnerableVariance > 0
+        ? Number.POSITIVE_INFINITY
+        : 0;
+  const spreadRatioLabel = Number.isFinite(spreadRatio)
+    ? `${formatDecimal(spreadRatio, 1)}× wider`
+    : '∞× wider';
   const samplesReady = state.vulnerableSamples.length >= 6 && state.patchedSamples.length >= 6;
   const verdictTone = !samplesReady ? 'pending' : spreadRatio >= 4 ? 'leak' : 'edge';
   const verdictHeadline =
@@ -933,7 +987,7 @@ function renderOscilloscope(): string {
       <div class="verdict verdict--${verdictTone}" role="status">
         <div class="verdict-row">
           <span class="verdict-pill">Variance ratio</span>
-          <strong>${samplesReady ? `${formatDecimal(spreadRatio, 1)}× wider` : '—'}</strong>
+          <strong>${samplesReady ? spreadRatioLabel : '—'}</strong>
         </div>
         <div class="verdict-row">
           <span class="verdict-pill">Mean delta</span>
@@ -1058,52 +1112,21 @@ function renderRecoveryGrid(): string {
     </section>`;
 }
 
-function renderAttack(): string {
-  const analysis = statisticalAnalysis(state.attackState.timingProfile);
-  const displayedMode = state.attackMode === 'vulnerable' ? 'YES' : 'PATCHED';
-  const progress = (state.attackState.queries / ATTACK_QUERY_BUDGET) * 100;
-  const recoveredProgress = (state.attackState.recoveredBits / state.attackState.totalBits) * 100;
-  const attackTrace = createPolyline(state.attackQueryTimes, state.attackMode === 'vulnerable' ? 'danger' : 'safe');
-
-  const milestoneStrip = MILESTONE_PCT.map((threshold) => {
+// The attack loop repaints these dynamic regions every frame. They are split out
+// so paintAttackExhibit() can refresh them in place without touching the control
+// buttons' DOM nodes — otherwise rebuilding the controls ~60×/s would drop a
+// mouse click (e.g. Stop) that happens to span a repaint frame.
+function renderMilestoneStripInner(): string {
+  return MILESTONE_PCT.map((threshold) => {
     const reached = state.milestonesReached.includes(threshold);
     return `<span class="milestone ${reached ? 'is-reached' : ''}" aria-label="${threshold}% milestone${reached ? ' reached' : ''}">${threshold}%</span>`;
   }).join('');
+}
 
+function renderMeterStackInner(): string {
+  const progress = (state.attackState.queries / ATTACK_QUERY_BUDGET) * 100;
+  const recoveredProgress = (state.attackState.recoveredBits / state.attackState.totalBits) * 100;
   return `
-    <section class="panel exhibit" id="exhibit-3" data-exhibit="3" aria-busy="${state.attackRunning}">
-      <div class="section-heading">
-        <p class="kicker">Exhibit 3 of 5</p>
-        <h2>Live attack progress</h2>
-      </div>
-      ${renderTryThis(2)}
-      <div class="milestone-strip" role="group" aria-label="Recovery milestones">
-        ${milestoneStrip}
-      </div>
-      <div class="attack-summary">
-        <div>
-          <p class="mini-label">Attack variant</p>
-          <strong>KyberSlash2, modeled against ML-KEM-768</strong>
-          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. It mirrors the paper's leakage dynamics without pretending to measure actual CPU cycles in the browser.</p>
-        </div>
-        <div class="attack-mode-toggle">
-          <button type="button" class="chip ${state.attackMode === 'vulnerable' ? 'is-active' : ''}" data-action="mode-vulnerable" aria-pressed="${state.attackMode === 'vulnerable'}">Vulnerable path</button>
-          <button type="button" class="chip ${state.attackMode === 'patched' ? 'is-active' : ''}" data-action="mode-patched" aria-pressed="${state.attackMode === 'patched'}">Patched path</button>
-        </div>
-      </div>
-      <div class="speed-row" role="group" aria-label="Attack playback speed">
-        <span class="speed-label">Playback speed</span>
-        <button type="button" class="chip chip--speed ${state.attackSpeed === 1 ? 'is-active' : ''}" data-action="speed-1" aria-pressed="${state.attackSpeed === 1}">1×</button>
-        <button type="button" class="chip chip--speed ${state.attackSpeed === 4 ? 'is-active' : ''}" data-action="speed-4" aria-pressed="${state.attackSpeed === 4}">4×</button>
-        <button type="button" class="chip chip--speed ${state.attackSpeed === 16 ? 'is-active' : ''}" data-action="speed-16" aria-pressed="${state.attackSpeed === 16}">16×</button>
-        <span class="speed-hint">${state.attackSpeed === 1 ? 'real-time streaming' : state.attackSpeed === 4 ? 'enough to skim a recovery' : 'fast-forward to the verified match'}</span>
-      </div>
-      ${renderRecoveryGrid()}
-      <div class="attack-layout">
-        <div class="attack-card">
-          <p class="attack-line"><span>Target:</span><strong>ML-KEM-768 secret key, 768 coefficients</strong></p>
-          <p class="attack-line"><span>Implementation:</span><strong>${displayedMode}</strong></p>
-          <p class="attack-line"><span>Target platform:</span><strong>Simulated ${escapeHtml(PLATFORM_LABELS[state.platform])}</strong></p>
           <div class="meter-block">
             <p class="meter-label">Queries sent</p>
             <div class="meter" aria-hidden="true"><span style="width:${progress}%"></span></div>
@@ -1118,26 +1141,24 @@ function renderAttack(): string {
             <p class="meter-label">Simulated elapsed time</p>
             <div class="meter meter--cyan" aria-hidden="true"><span style="width:${progress}%"></span></div>
             <small>${formatDecimal(state.attackState.queries / 1500, 1)} minutes</small>
-          </div>
-          <div class="controls-row">
-            <button type="button" class="control" data-action="launch-attack" ${state.attackRunning ? 'disabled' : ''}>Launch KyberSlash attack</button>
-            <button type="button" class="control ghost" data-action="stop-attack" ${state.attackRunning ? '' : 'disabled'}>Stop</button>
-            <button type="button" class="control ghost" data-action="export-samples">Export timing samples</button>
-          </div>
-          <div class="controls-row compact">
-            <button type="button" class="control subtle" data-action="switch-implementation">Switch to ${state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable'} implementation</button>
-            <button type="button" class="control subtle" data-action="regenerate-key" ${state.attackRunning ? 'disabled' : ''}>Generate new target key</button>
-          </div>
-        </div>
-        <div class="attack-card attack-card--secondary" aria-live="polite">
-          ${attackTrace}
-          <div class="analysis-box">
+          </div>`;
+}
+
+function renderAttackTraceInner(): string {
+  return createPolyline(state.attackQueryTimes, state.attackMode === 'vulnerable' ? 'danger' : 'safe');
+}
+
+function renderAnalysisBoxInner(): string {
+  const analysis = statisticalAnalysis(state.attackState.timingProfile);
+  return `
             <p>Timing correlation test</p>
             <strong>${analysis.distinguishable ? 'Signal present' : 'Noise floor only'}</strong>
             <span>confidence = ${formatDecimal(analysis.confidenceLevel, 3)}</span>
-            <span>estimated queries needed = ${formatInteger(analysis.estimatedQueriesNeeded)}</span>
-          </div>
-          <div class="attack-log" aria-label="Attack event log">
+            <span>estimated queries needed = ${formatInteger(analysis.estimatedQueriesNeeded)}</span>`;
+}
+
+function renderAttackLogInner(): string {
+  return `
             <header class="attack-log-header">
               <p>Attack log</p>
               <span class="attack-log-count">${state.attackLog.length} event${state.attackLog.length === 1 ? '' : 's'}</span>
@@ -1160,8 +1181,62 @@ function renderAttack(): string {
                       )
                       .join('')}
                   </ol>`
-            }
+            }`;
+}
+
+function renderAttack(): string {
+  const displayedMode = state.attackMode === 'vulnerable' ? 'YES' : 'PATCHED';
+
+  return `
+    <section class="panel exhibit" id="exhibit-3" data-exhibit="3" aria-busy="${state.attackRunning}">
+      <div class="section-heading">
+        <p class="kicker">Exhibit 3 of 5</p>
+        <h2>Live attack progress</h2>
+      </div>
+      ${renderTryThis(2)}
+      <div class="milestone-strip" role="group" aria-label="Recovery milestones">
+        ${renderMilestoneStripInner()}
+      </div>
+      <div class="attack-summary">
+        <div>
+          <p class="mini-label">Attack variant</p>
+          <strong>KyberSlash2, modeled against ML-KEM-768</strong>
+          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. It mirrors the paper's leakage dynamics without pretending to measure actual CPU cycles in the browser.</p>
+          <p class="attack-fieldnote">Field result: in the original work a real Kyber512 key fell on a Raspberry Pi 2 (Cortex-A7) within 2–4 hours across 10 of 10 trials.</p>
+        </div>
+        <div class="attack-mode-toggle">
+          <button type="button" class="chip ${state.attackMode === 'vulnerable' ? 'is-active' : ''}" data-action="mode-vulnerable" aria-pressed="${state.attackMode === 'vulnerable'}">Vulnerable path</button>
+          <button type="button" class="chip ${state.attackMode === 'patched' ? 'is-active' : ''}" data-action="mode-patched" aria-pressed="${state.attackMode === 'patched'}">Patched path</button>
+        </div>
+      </div>
+      <div class="speed-row" role="group" aria-label="Attack playback speed">
+        <span class="speed-label">Playback speed</span>
+        <button type="button" class="chip chip--speed ${state.attackSpeed === 1 ? 'is-active' : ''}" data-action="speed-1" aria-pressed="${state.attackSpeed === 1}">1×</button>
+        <button type="button" class="chip chip--speed ${state.attackSpeed === 4 ? 'is-active' : ''}" data-action="speed-4" aria-pressed="${state.attackSpeed === 4}">4×</button>
+        <button type="button" class="chip chip--speed ${state.attackSpeed === 16 ? 'is-active' : ''}" data-action="speed-16" aria-pressed="${state.attackSpeed === 16}">16×</button>
+        <span class="speed-hint">${state.attackSpeed === 1 ? 'real-time streaming' : state.attackSpeed === 4 ? 'enough to skim a recovery' : 'fast-forward to the verified match'}</span>
+      </div>
+      ${renderRecoveryGrid()}
+      <div class="attack-layout">
+        <div class="attack-card">
+          <p class="attack-line"><span>Target:</span><strong>ML-KEM-768 secret key, 768 coefficients</strong></p>
+          <p class="attack-line"><span>Implementation:</span><strong>${displayedMode}</strong></p>
+          <p class="attack-line"><span>Target platform:</span><strong>Simulated ${escapeHtml(PLATFORM_LABELS[state.platform])}</strong></p>
+          <div class="meter-stack">${renderMeterStackInner()}</div>
+          <div class="controls-row">
+            <button type="button" class="control" data-action="launch-attack" ${state.attackRunning ? 'disabled' : ''}>Launch KyberSlash attack</button>
+            <button type="button" class="control ghost" data-action="stop-attack" ${state.attackRunning ? '' : 'disabled'}>Stop</button>
+            <button type="button" class="control ghost" data-action="export-samples">Export timing samples</button>
           </div>
+          <div class="controls-row compact">
+            <button type="button" class="control subtle" data-action="switch-implementation">Switch to ${state.attackMode === 'vulnerable' ? 'patched' : 'vulnerable'} implementation</button>
+            <button type="button" class="control subtle" data-action="regenerate-key" ${state.attackRunning ? 'disabled' : ''}>Generate new target key</button>
+          </div>
+        </div>
+        <div class="attack-card attack-card--secondary" aria-live="polite">
+          <div class="attack-trace-host">${renderAttackTraceInner()}</div>
+          <div class="analysis-box">${renderAnalysisBoxInner()}</div>
+          <div class="attack-log" aria-label="Attack event log">${renderAttackLogInner()}</div>
         </div>
       </div>
     </section>`;
@@ -1242,24 +1317,8 @@ function render(focusTarget?: string): void {
       : undefined;
   const nextFocusTarget = focusTarget ?? activeAction;
 
-  const themeGlyph = state.theme === 'light' ? '☾' : '☀';
-  const themeNext = state.theme === 'light' ? 'dark' : 'light';
-
   app.innerHTML = `
     <a class="skip-link" href="#main-content">Skip to main content</a>
-    <header class="cl-header">
-      <div class="cl-header-left">
-        <a class="cl-badge" href="https://crypto-lab.systemslibrarian.dev/" target="_blank" rel="noopener" aria-label="Crypto Lab home">CL</a>
-        <div class="cl-header-text">
-          <span class="cl-title">CRYPTO LAB</span>
-          <a class="cl-sub" href="https://crypto-lab.systemslibrarian.dev/" target="_blank" rel="noopener">kyberslash · systemslibrarian.dev</a>
-        </div>
-      </div>
-      <nav class="cl-header-nav" aria-label="Header navigation">
-        <a class="cl-nav-btn" href="https://github.com/systemslibrarian/crypto-lab-kyberslash" target="_blank" rel="noopener">GitHub</a>
-        <button type="button" class="cl-theme-toggle" data-action="toggle-theme" aria-label="Switch to ${themeNext} mode">${themeGlyph}</button>
-      </nav>
-    </header>
     <main id="main-content" class="lab-shell" tabindex="-1">
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.statusMessage)}</div>
       <header class="topbar">
@@ -1382,10 +1441,6 @@ app.addEventListener('click', (event) => {
   }
 
   switch (action) {
-    case 'toggle-theme':
-      setTheme(state.theme === 'dark' ? 'light' : 'dark');
-      render('toggle-theme');
-      break;
     case 'code-vulnerable':
       state.codeMode = 'vulnerable';
       setStatusMessage('Showing the vulnerable reference code path.');

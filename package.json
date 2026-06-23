@@ -10,9 +10,12 @@
     "verify:phase1": "tsx scripts/verify-phase1.ts",
     "verify:phase2": "tsx scripts/verify-phase2.ts",
     "verify:phase3": "tsx scripts/verify-phase3.ts",
-    "verify:phase7": "tsx scripts/verify-phase7.ts"
+    "verify:phase7": "tsx scripts/verify-phase7.ts",
+    "verify:ui": "node scripts/verify-ui.mjs",
+    "verify:ui:interactions": "node scripts/verify-ui-interactions.mjs"
   },
   "devDependencies": {
+    "playwright": "^1.61.1",
     "tsx": "^4.21.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.4"

@@ -2,6 +2,8 @@
 
 Browser-based educational simulation of the KyberSlash timing attacks on ML-KEM (formerly Kyber). Built with Vite, strict TypeScript, and vanilla CSS for GitHub Pages deployment.
 
+![KyberSlash — a vulnerable timing trace swings while the patched trace stays flat, and the 768-coefficient ML-KEM-768 secret key is recovered](public/poster.svg)
+
 ## What You Learn In 3 Minutes
 
 - **The bug**: a single `/ KYBER_Q` on a secret-dependent operand inside `poly_tomsg` and `poly_compress` leaks key bits through CPU `udiv` latency.
@@ -11,12 +13,11 @@ Browser-based educational simulation of the KyberSlash timing attacks on ML-KEM 
 
 ## Highlights
 
-| | |
-| --- | --- |
-| **Flip to patched** — same dataset, same axes, signal vanishes. | ![Flip to patched](docs/flip-to-patched.gif) |
-| **Live recovery** — 768 coefficients reconstructed, gold pill confirms a verified match against the real key. | ![Attack progression](docs/attack-progression.png) |
+- **Flip to patched** — the same dataset on the same axes; the vulnerable signal swings and the patched signal goes flat. The signature "aha" moment.
+- **Live recovery** — 768 coefficients reconstructed one by one, with a gold pill that confirms a verified match against the real key.
+- **Two platforms** — toggle a simulated Cortex-A7 (Raspberry Pi 2) or Cortex-M4 to see how the leak narrows but persists.
 
-> Media files live in `docs/`. See `docs/CAPTURES.md` for the exact framing instructions used to record them.
+> Want animated captures? `docs/CAPTURES.md` has exact framing instructions for an optional `flip-to-patched.gif` and `attack-progression.png`. Drop them into `docs/` to embed them here; until then the poster above and the [live demo](https://systemslibrarian.github.io/crypto-lab-kyberslash/) carry the visuals.
 
 ## What It Is
 

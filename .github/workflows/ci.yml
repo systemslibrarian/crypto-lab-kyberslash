@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Timing-model and attack checks
+        run: |
+          npm run verify:phase1
+          npm run verify:phase2
+          npm run verify:phase3
+          npm run verify:phase7
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: UI smoke and interaction checks
+        run: |
+          npm run preview -- --port 4173 &
+          SERVER_PID=$!
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4173/crypto-lab-kyberslash/ >/dev/null; then
+              echo "preview is up"
+              break
+            fi
+            sleep 1
+          done
+          npm run verify:ui
+          npm run verify:ui:interactions
+          kill "$SERVER_PID" 2>/dev/null || true

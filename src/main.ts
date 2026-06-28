@@ -1351,6 +1351,16 @@ function render(focusTarget?: string): void {
           ·
           <a href="https://github.com/systemslibrarian/crypto-lab-kyberslash" target="_blank" rel="noopener">source on GitHub</a>
         </p>
+        <p class="citation">
+          <span>Related demos</span>
+          <a href="https://systemslibrarian.github.io/crypto-lab-lattice-fault/" target="_blank" rel="noopener">crypto-lab-lattice-fault</a>
+          ·
+          <a href="https://systemslibrarian.github.io/crypto-lab-kyber-vault/" target="_blank" rel="noopener">crypto-lab-kyber-vault</a>
+          ·
+          <a href="https://systemslibrarian.github.io/crypto-lab-hqc-timing/" target="_blank" rel="noopener">crypto-lab-hqc-timing</a>
+          ·
+          <a href="https://systemslibrarian.github.io/crypto-lab-ciphertext-mirror/" target="_blank" rel="noopener">crypto-lab-ciphertext-mirror</a>
+        </p>
         <blockquote class="footer-verse">
           <p>${QUOTE}</p>
           <footer>1 Corinthians 10:31</footer>

@@ -896,7 +896,10 @@ blockquote footer {
   padding: 3px 12px;
   border-radius: 999px;
   background: var(--amber);
-  color: var(--bg);
+  /* Fixed dark ink, not var(--bg): the amber fill is light in BOTH themes, so
+     it needs dark text always. var(--bg) is near-white on the light theme and
+     fails contrast against amber. */
+  color: #071118;
   font-family: var(--font-mono);
   font-size: 0.68rem;
   letter-spacing: 0.18em;
@@ -1157,7 +1160,9 @@ blockquote footer {
 }
 
 .milestone.is-reached {
-  color: var(--bg);
+  /* Gold fill is light in both themes; use fixed dark ink so light-theme text
+     (var(--bg) near-white) doesn't fall below contrast on the gold pill. */
+  color: #071118;
   background: var(--gold);
   border-color: var(--gold);
   font-weight: 700;

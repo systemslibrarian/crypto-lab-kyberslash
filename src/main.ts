@@ -1099,7 +1099,7 @@ function renderRecoveryGrid(): string {
         </div>
         ${banner}
       </header>
-      <div class="recovery-grid" role="list" aria-label="ML-KEM-768 secret key coefficients">
+      <div class="recovery-grid" role="list" tabindex="0" aria-label="ML-KEM-768 secret key coefficients">
         ${cells.join('')}
       </div>
       <p class="recovery-legend" aria-hidden="true">

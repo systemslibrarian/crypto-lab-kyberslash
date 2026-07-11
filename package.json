@@ -12,9 +12,12 @@
     "verify:phase3": "tsx scripts/verify-phase3.ts",
     "verify:phase7": "tsx scripts/verify-phase7.ts",
     "verify:ui": "node scripts/verify-ui.mjs",
-    "verify:ui:interactions": "node scripts/verify-ui-interactions.mjs"
+    "verify:ui:interactions": "node scripts/verify-ui-interactions.mjs",
+    "test:a11y": "playwright test"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.61.1",
     "playwright": "^1.61.1",
     "tsx": "^4.21.0",
     "typescript": "~6.0.2",

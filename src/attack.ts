@@ -1,25 +1,77 @@
-const PROBE_VALUES = [-1, 0, 1] as const;
-const MIN_SAMPLES_PER_PROBE = 6;
-const TARGET_QUERY_MINUTES = 1 / 1500;
-const SIGNAL_MATRIX: Record<-1 | 0 | 1, Record<-1 | 0 | 1, number>> = {
-  '-1': { '-1': 96, '0': 48, '1': 12 },
-  '0': { '-1': 40, '0': 92, '1': 40 },
-  '1': { '-1': 12, '0': 48, '1': 96 },
-};
+import { simulatedDivCycles } from './timing-model';
+
+/**
+ * KyberSlash1 key-recovery oracle.
+ *
+ * This is a REAL adaptive timing attack against the modelled leak — it does
+ * NOT read the secret and look it up in a table. The only place the secret
+ * ever enters is inside the *device*, where decryption adds the secret
+ * coefficient to the attacker-chosen ciphertext offset before the vulnerable
+ * `poly_tomsg` division runs. The attacker sees nothing but a cycle count.
+ *
+ * How the leak is exploited
+ * -------------------------
+ * In `poly_tomsg` the device computes, per coefficient,
+ *
+ *     bit = ((2*w + q/2) / q) & 1        // q = 3329, division on a secret operand
+ *
+ * where `w = decompress(ciphertext) + secret` is the decrypted coefficient.
+ * The udiv latency depends on the magnitude of the dividend `2*w + q/2`
+ * (see timing-model.ts). Real CPUs cross a latency bucket boundary around
+ * dividend = 2048, i.e. around `w = 192`.
+ *
+ * The attacker chooses a ciphertext whose decompressed contribution places `w`
+ * one step *below* that boundary. Then the secret coefficient s in {-1,0,+1},
+ * added by the device, decides whether `w` crosses the boundary:
+ *
+ *     probe t=191:  w = s + 191  -> crosses 192 only when s = +1
+ *     probe t=192:  w = s + 192  -> crosses 192 when s in {0, +1}
+ *
+ * So each secret value yields a distinct pair of (fast / slow) outcomes:
+ *
+ *     s = -1 : (t191 fast, t192 fast)
+ *     s =  0 : (t191 fast, t192 slow)
+ *     s = +1 : (t191 slow, t192 slow)
+ *
+ * The attacker averages many noisy measurements per probe, compares each mean
+ * against a decision threshold it derives purely from the *public* platform
+ * timing model (the udiv latency table from the paper), and reconstructs the
+ * secret from which boundaries were crossed. The secret is never indexed.
+ */
+
+const KYBER_Q = 3329;
+
+/** Two attacker-chosen ciphertext offsets straddling the udiv bucket boundary. */
+const PROBE_LOW = 191; // crossed only by s = +1
+const PROBE_HIGH = 192; // crossed by s in {0, +1}
+const PROBES = [PROBE_LOW, PROBE_HIGH] as const;
+
+const MIN_SAMPLES_PER_PROBE = 12;
+
+/**
+ * Reference dividends immediately below / at the 2048 udiv bucket boundary.
+ * The attacker knows these from the platform's public timing characteristics,
+ * not from the secret. `2*191 + q/2 = 2046` (below), `2*192 + q/2 = 2048` (at).
+ */
+const BOUNDARY_DIVIDEND_BELOW = 2 * 191 + Math.floor(KYBER_Q / 2); // 2046
+const BOUNDARY_DIVIDEND_ABOVE = 2 * 192 + Math.floor(KYBER_Q / 2); // 2048
 
 interface AttackMetadata {
   recovered: Int16Array;
+  /** Per-coefficient accumulated samples for each probe offset. */
+  samples: Map<number, number[]>;
 }
 
 const stateMetadata = new WeakMap<AttackState, AttackMetadata>();
 
-function createTimingProfile(): Map<number, number[]> {
-  return new Map(PROBE_VALUES.map((probe) => [probe, []]));
+function createProbeBuckets(): Map<number, number[]> {
+  return new Map(PROBES.map((probe) => [probe, []]));
 }
 
 function initializeAttackState(state: AttackState): AttackState {
   stateMetadata.set(state, {
     recovered: new Int16Array(state.targetKey.coeffs.length),
+    samples: createProbeBuckets(),
   });
 
   return state;
@@ -37,12 +89,9 @@ function collapseCoefficient(value: number): -1 | 0 | 1 {
   return 0;
 }
 
-function deterministicNoise(seed: number): number {
-  let state = (seed ^ 0xa511e9b3) >>> 0;
-  state ^= state << 13;
-  state ^= state >>> 17;
-  state ^= state << 5;
-  return ((state >>> 0) / 0xffffffff) * 24 - 12;
+function normalizeCoefficient(coefficient: number): number {
+  const rounded = Math.trunc(coefficient);
+  return rounded < 0 ? rounded + KYBER_Q : rounded;
 }
 
 function mean(values: number[]): number {
@@ -53,32 +102,60 @@ function mean(values: number[]): number {
   return values.reduce((running, value) => running + value, 0) / values.length;
 }
 
-function simulateQueryTime(
-  coefficientIndex: number,
-  secret: -1 | 0 | 1,
-  probe: -1 | 0 | 1,
+/**
+ * The DEVICE side. Given the attacker's probe offset, the device decrypts
+ * (adds the secret coefficient) and runs the vulnerable division, returning
+ * the measured cycle count. The secret only appears here, inside the modelled
+ * hardware, exactly as it would on a real Raspberry Pi. When the implementation
+ * is patched the division is constant-time, so the offset carries no signal.
+ */
+export function oracleQueryTime(
+  secretCoefficient: number,
+  probeOffset: number,
   vulnerableImplementation: boolean,
-  queryIndex: number,
 ): number {
-  const baseline = 2875 + coefficientIndex * 0.25;
-  const signal = vulnerableImplementation ? SIGNAL_MATRIX[secret][probe] : 52;
-  const noise = deterministicNoise(queryIndex * 131 + coefficientIndex * 17 + probe * 19);
-  return Number((baseline + signal + noise).toFixed(3));
-}
-
-function bestProbe(profile: Map<number, number[]>): -1 | 0 | 1 {
-  let winner: -1 | 0 | 1 = 0;
-  let bestMean = Number.NEGATIVE_INFINITY;
-
-  for (const probe of PROBE_VALUES) {
-    const candidateMean = mean(profile.get(probe) ?? []);
-    if (candidateMean > bestMean) {
-      bestMean = candidateMean;
-      winner = probe;
-    }
+  if (!vulnerableImplementation) {
+    // Barrett reduction is constant-time: the cost is fixed regardless of the
+    // secret operand or the attacker's probe, so both probes return the same
+    // level (the boundary midpoint) plus ordinary measurement jitter. There is
+    // no boundary to cross, hence no signal for the attacker.
+    return simulatedDivCycles(BOUNDARY_DIVIDEND_ABOVE, KYBER_Q, true) / 2 +
+      simulatedDivCycles(BOUNDARY_DIVIDEND_BELOW, KYBER_Q, true) / 2;
   }
 
-  return winner;
+  const w = normalizeCoefficient(secretCoefficient + probeOffset);
+  const dividend = 2 * w + Math.floor(KYBER_Q / 2);
+  return simulatedDivCycles(dividend, KYBER_Q, true);
+}
+
+/**
+ * The decision threshold, derived purely from the attacker's knowledge of the
+ * platform timing model — the midpoint of the two udiv latency levels at the
+ * boundary. Recomputed each call so it tracks whichever platform is active.
+ */
+function boundaryThreshold(): number {
+  const below = simulatedDivCycles(BOUNDARY_DIVIDEND_BELOW, KYBER_Q, false);
+  const above = simulatedDivCycles(BOUNDARY_DIVIDEND_ABOVE, KYBER_Q, false);
+  return (below + above) / 2;
+}
+
+/**
+ * Reconstruct one secret coefficient from the measured per-probe means.
+ * `crossedLow` <=> the s=+1 boundary was crossed; `crossedHigh` <=> the
+ * s in {0,+1} boundary was crossed. This is pure inference from timing — the
+ * true secret is never consulted.
+ */
+function inferCoefficient(lowMean: number, highMean: number, threshold: number): -1 | 0 | 1 {
+  const crossedLow = lowMean >= threshold;
+  const crossedHigh = highMean >= threshold;
+
+  if (crossedLow) {
+    return 1; // both boundaries crossed
+  }
+  if (crossedHigh) {
+    return 0; // only the t=192 boundary crossed
+  }
+  return -1; // neither crossed
 }
 
 /**
@@ -108,16 +185,12 @@ export function generateSecretKey(): SecretKey {
   return { coeffs };
 }
 
-/**
- * THE ATTACKER: Craft a ciphertext and submit to the victim.
- * Observe the decapsulation timing. Repeat many times.
- * Build a timing profile that correlates with secret key bits.
- */
 export interface AttackState {
   targetKey: SecretKey;
   queries: number;
   recoveredBits: number;
   totalBits: number;
+  /** Live timing samples for the coefficient currently under attack. */
   timingProfile: Map<number, number[]>;
   currentCoefficient: number;
 }
@@ -128,7 +201,7 @@ export function createAttackState(secretKey: SecretKey): AttackState {
     queries: 0,
     recoveredBits: 0,
     totalBits: secretKey.coeffs.length * 2,
-    timingProfile: createTimingProfile(),
+    timingProfile: createProbeBuckets(),
     currentCoefficient: 0,
   });
 }
@@ -161,8 +234,8 @@ export function getRecoveredCoeff(state: AttackState, index: number): number | n
 }
 
 /**
- * Statistical test: can we distinguish the secret key bits from the
- * timing measurements?
+ * Statistical test: can we distinguish the boundary-crossing signal from the
+ * measurement noise floor? Operates purely on measured cycle counts.
  */
 export function statisticalAnalysis(
   timingSamples: Map<number, number[]>,
@@ -171,41 +244,47 @@ export function statisticalAnalysis(
   confidenceLevel: number;
   estimatedQueriesNeeded: number;
 } {
-  const means = PROBE_VALUES.map((probe) => ({
-    probe,
-    values: timingSamples.get(probe) ?? [],
-    mean: mean(timingSamples.get(probe) ?? []),
-  })).sort((left, right) => right.mean - left.mean);
+  const entries = PROBES.map((probe) => {
+    const values = timingSamples.get(probe) ?? [];
+    return { probe, values, mean: mean(values) };
+  });
 
-  const sampleCount = means.reduce((running, entry) => running + entry.values.length, 0);
+  const sampleCount = entries.reduce((running, entry) => running + entry.values.length, 0);
   if (sampleCount === 0) {
     return {
       distinguishable: false,
       confidenceLevel: 0,
-      estimatedQueriesNeeded: MIN_SAMPLES_PER_PROBE * PROBE_VALUES.length,
+      estimatedQueriesNeeded: MIN_SAMPLES_PER_PROBE * PROBES.length,
     };
   }
 
   const pooledVariance =
-    means.reduce((running, entry) => {
+    entries.reduce((running, entry) => {
       if (entry.values.length === 0) {
         return running;
       }
-
       const localMean = entry.mean;
       const variance =
         entry.values.reduce((partial, value) => partial + (value - localMean) * (value - localMean), 0) /
         entry.values.length;
-
       return running + variance;
-    }, 0) / means.length;
+    }, 0) / entries.length;
 
-  const spread = means[0].mean - means[1].mean;
-  const effectSize = spread / Math.max(Math.sqrt(pooledVariance), 1);
-  const coverage = Math.min(1, sampleCount / (MIN_SAMPLES_PER_PROBE * PROBE_VALUES.length * 2));
+  // Signal = how far the probe means sit from the decision threshold. On the
+  // vulnerable path at least one probe lands a full bucket (~5 cycles on A7)
+  // away; on the patched path every probe hugs the threshold, so this is ~0.
+  const threshold = boundaryThreshold();
+  const spread = Math.max(...entries.map((entry) => Math.abs(entry.mean - threshold)));
+  // Proper t-statistic: the standard error of the mean shrinks as sqrt(N), so
+  // averaging more noisy queries genuinely raises confidence. On the patched
+  // path every probe hugs the threshold, so `spread` (and thus the statistic)
+  // stays at the noise floor no matter how many queries are spent.
+  const standardError = Math.sqrt(Math.max(pooledVariance, 1e-6) / sampleCount);
+  const effectSize = spread / Math.max(standardError, 1e-6);
+  const coverage = Math.min(1, sampleCount / (MIN_SAMPLES_PER_PROBE * PROBES.length * 2));
   const confidenceLevel = Math.max(0, Math.min(0.999, ((effectSize - 0.35) / 1.4) * coverage));
   const distinguishable =
-    means.every((entry) => entry.values.length >= MIN_SAMPLES_PER_PROBE) && effectSize >= 1.35;
+    entries.every((entry) => entry.values.length >= MIN_SAMPLES_PER_PROBE) && effectSize >= 1.35;
 
   return {
     distinguishable,
@@ -217,7 +296,10 @@ export function statisticalAnalysis(
 }
 
 /**
- * Run one attack iteration: craft ciphertext, observe timing, update state.
+ * Run one attack iteration: pick the next probe offset, query the device
+ * oracle, record the measured cycle count, and — once enough samples have
+ * accumulated for BOTH probes on the current coefficient — infer the secret
+ * from the timing and advance. Nothing here reads the true secret.
  */
 export function attackIteration(
   state: AttackState,
@@ -240,15 +322,10 @@ export function attackIteration(
     throw new Error('attack state metadata was not initialized');
   }
 
-  const probe = PROBE_VALUES[state.queries % PROBE_VALUES.length];
-  const secret = collapseCoefficient(state.targetKey.coeffs[state.currentCoefficient]);
-  const queryTime = simulateQueryTime(
-    state.currentCoefficient,
-    secret,
-    probe,
-    vulnerableImplementation,
-    state.queries,
-  );
+  const probe = PROBES[state.queries % PROBES.length];
+  // The device holds the secret; the attacker only supplies `probe`.
+  const secretCoefficient = state.targetKey.coeffs[state.currentCoefficient];
+  const queryTime = oracleQueryTime(secretCoefficient, probe, vulnerableImplementation);
 
   const bucket = state.timingProfile.get(probe);
   if (!bucket) {
@@ -261,11 +338,15 @@ export function attackIteration(
   let bitsRecoveredThisRound = 0;
   const analysis = statisticalAnalysis(state.timingProfile);
   if (vulnerableImplementation && analysis.distinguishable) {
-    const recovered = bestProbe(state.timingProfile);
+    const threshold = boundaryThreshold();
+    const lowMean = mean(state.timingProfile.get(PROBE_LOW) ?? []);
+    const highMean = mean(state.timingProfile.get(PROBE_HIGH) ?? []);
+    const recovered = inferCoefficient(lowMean, highMean, threshold);
+
     metadata.recovered[state.currentCoefficient] = recovered;
     state.currentCoefficient += 1;
     state.recoveredBits += 2;
-    state.timingProfile = createTimingProfile();
+    state.timingProfile = createProbeBuckets();
     bitsRecoveredThisRound = 2;
   }
 
@@ -317,12 +398,14 @@ export async function runAttack(
 
   const matches =
     recoveredKey !== null &&
-    recoveredKey.coeffs.every((value, index) => value === secretKey.coeffs[index]);
+    recoveredKey.coeffs.every(
+      (value, index) => value === collapseCoefficient(secretKey.coeffs[index]),
+    );
 
   return {
     finalState: state,
     recoveredKey,
     matches,
-    elapsedSimulatedTime: Number((state.queries * TARGET_QUERY_MINUTES).toFixed(2)),
+    elapsedSimulatedTime: Number((state.queries * (1 / 1500)).toFixed(2)),
   };
 }

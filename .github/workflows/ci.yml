@@ -29,6 +29,9 @@ jobs:
       - name: Typecheck and build
         run: npm run build
 
+      - name: Unit tests (crypto KATs + honest attack)
+        run: npm test
+
       - name: Timing-model and attack checks
         run: |
           npm run verify:phase1

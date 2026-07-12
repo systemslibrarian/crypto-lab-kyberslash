@@ -56,7 +56,7 @@ npm run dev
 
 - **The bug**: a single `/ KYBER_Q` on a secret-dependent operand inside `poly_tomsg` and `poly_compress` leaks key bits through CPU `udiv` latency.
 - **The fix**: replace the divide with Barrett reduction (`(x * BARRETT_INV) >> 32`) so the secret path becomes constant-time.
-- **The proof**: an in-browser oscilloscope shows the vulnerable mean swinging while the patched mean is flat, and a live attack reconstructs all 768 ML-KEM-768 secret coefficients into a verified match against the real key.
+- **The proof**: an in-browser oscilloscope shows the vulnerable mean swinging while the patched mean is flat, and a live attack reconstructs all 768 ML-KEM-768 secret coefficients purely from the modelled `poly_tomsg` division latency — each coefficient is inferred from which udiv bucket boundary the timing crosses, never read directly — then verified against the real key. On the patched (constant-time) path the identical attack recovers nothing.
 - **The point**: NIST standardisation is a mathematical contract; side-channel safety is a separate property and has to be audited per target — Cortex-A7 leaks differently than Cortex-M4, and `-Os` can reintroduce division on platforms x86_64 normally avoids.
 
 ## Highlights

@@ -71,15 +71,18 @@ async function main(): Promise<void> {
   const patchedFull = await runAttack(secretKey, false, 20000);
   assert(patchedFull.finalState.recoveredBits === 0, 'patched attack should recover zero bits');
 
+  // Probe-keyed timing samples (Cortex-A7 udiv levels straddling the 2048
+  // bucket boundary; decision threshold ~17.5 cycles). Probe 191 sits below the
+  // boundary and probe 192 lands above it -> the s=0 boundary-crossing signature.
   const vulnerableProfile = new Map<number, number[]>([
-    [-1, [2975, 2971, 2980, 2969, 2978, 2974]],
-    [0, [2928, 2925, 2932, 2926, 2930, 2927]],
-    [1, [2892, 2888, 2895, 2890, 2894, 2891]],
+    [191, [14.98, 15.01, 14.99, 15.0, 15.02, 14.97, 15.0, 14.99, 15.01, 14.98, 15.0, 14.99]],
+    [192, [20.0, 19.98, 20.01, 19.99, 20.02, 19.97, 20.0, 20.01, 19.99, 20.0, 19.98, 20.01]],
   ]);
+  // Patched: Barrett reduction is constant-time, so both probes hug the
+  // threshold with only measurement jitter -> no boundary is crossed.
   const patchedProfile = new Map<number, number[]>([
-    [-1, [2922, 2928, 2921, 2927, 2924, 2926]],
-    [0, [2924, 2923, 2925, 2922, 2926, 2924]],
-    [1, [2925, 2921, 2927, 2923, 2924, 2926]],
+    [191, [17.5, 17.48, 17.52, 17.49, 17.51, 17.5, 17.47, 17.53, 17.5, 17.49, 17.51, 17.5]],
+    [192, [17.49, 17.51, 17.5, 17.52, 17.48, 17.5, 17.51, 17.49, 17.5, 17.52, 17.48, 17.5]],
   ]);
 
   const vulnerableAnalysis = statisticalAnalysis(vulnerableProfile);

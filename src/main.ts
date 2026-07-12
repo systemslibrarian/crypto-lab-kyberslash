@@ -1200,8 +1200,8 @@ function renderAttack(): string {
       <div class="attack-summary">
         <div>
           <p class="mini-label">Attack variant</p>
-          <strong>KyberSlash2, modeled against ML-KEM-768</strong>
-          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. It mirrors the paper's leakage dynamics without pretending to measure actual CPU cycles in the browser.</p>
+          <strong>KyberSlash1 (poly_tomsg), modeled against ML-KEM-768</strong>
+          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. The attacker submits crafted ciphertexts, measures the modelled <code>poly_tomsg</code> division latency, and infers each secret coefficient from which udiv bucket boundary the timing crosses — the secret is never read directly, it emerges statistically from the noisy cycle counts.</p>
           <p class="attack-fieldnote">Field result: in the original work a real Kyber512 key fell on a Raspberry Pi 2 (Cortex-A7) within 2–4 hours across 10 of 10 trials.</p>
         </div>
         <div class="attack-mode-toggle">

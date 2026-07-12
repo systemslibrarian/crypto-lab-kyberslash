@@ -860,14 +860,17 @@ function renderHero(): string {
   return `
     <section class="hero-shell">
       <div class="hero-copy">
-        <p class="eyebrow">Crypto Lab · KyberSlash</p>
-        <h1>How a single CPU division leaked a post-quantum secret key</h1>
-        <p class="lead">
-          ML-KEM (formerly Kyber) is the post-quantum encryption replacing RSA in TLS and NIST <strong>FIPS 203</strong>. Its reference C code passed years of review before standardisation. But on a $35 Raspberry Pi, a single line of math took different amounts of time depending on the secret value being processed — and that timing gap alone was enough to recover the entire key.
-        </p>
-        <p class="lead">
-          This page walks through the bug, the one-line patch, and a live in-browser attack that recovers all 768 coefficients of an ML-KEM-768 secret key — KyberSlash2 falls in minutes, KyberSlash1 in hours. <strong>Work down through Exhibits 1–5 below — each one tells you exactly what to click.</strong>
-        </p>
+        <header class="cl-hero">
+          <div class="cl-hero-main">
+            <h1 class="cl-hero-title">KyberSlash</h1>
+            <p class="cl-hero-sub">ML-KEM (Kyber) · timing side-channel · FIPS 203</p>
+            <p class="cl-hero-desc">Watch a secret-dependent division by q=3329 in Kyber's reference C leak its timing, then flip to the Barrett-reduction fix and run a live in-browser attack that recovers all 768 coefficients of an ML-KEM-768 secret key.</p>
+          </div>
+          <aside class="cl-hero-why" aria-label="Why it matters">
+            <span class="cl-hero-why-label">WHY IT MATTERS</span>
+            <p class="cl-hero-why-text">ML-KEM is the post-quantum KEM replacing RSA in TLS. Its reference code passed years of review, yet one variable-latency division on a $35 Raspberry Pi leaked the whole key — proof that standardization is not constant-time safety.</p>
+          </aside>
+        </header>
         <div class="hero-cta" role="group" aria-label="Auto-tour controls">
           ${
             state.tourRunning

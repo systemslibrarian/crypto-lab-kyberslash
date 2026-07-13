@@ -57,6 +57,56 @@ const PLATFORM_PROFILES: Record<Platform, PlatformProfile> = {
   },
 };
 
+/**
+ * A single udiv latency band for teaching visuals: the operand-magnitude range
+ * that maps to one nominal cycle cost. `floor` is inclusive, `ceiling` exclusive.
+ * These are read straight off the same {@link PlatformProfile.buckets} the timing
+ * model uses, so the "why division leaks" number line never diverges from the
+ * cycle counts the attack actually sees.
+ */
+export interface LatencyBand {
+  floor: number;
+  ceiling: number;
+  cycles: number;
+  label: string;
+}
+
+/**
+ * The udiv latency bands for a platform, as (magnitude range -> cycle cost).
+ * Used only for on-screen teaching; the numbers come from the model's buckets.
+ */
+export function getLatencyBands(platform: Platform = activePlatform): LatencyBand[] {
+  const profile = PLATFORM_PROFILES[platform];
+  const bands: LatencyBand[] = [];
+  let floor = 0;
+  for (const bucket of profile.buckets) {
+    const finite = Number.isFinite(bucket.ceiling);
+    bands.push({
+      floor,
+      ceiling: bucket.ceiling,
+      cycles: bucket.baseCycles,
+      label: finite ? `${floor}–${bucket.ceiling - 1}` : `${floor}+`,
+    });
+    floor = finite ? bucket.ceiling : floor;
+  }
+  return bands;
+}
+
+/**
+ * Which latency band a given dividend magnitude falls into (0-based index into
+ * {@link getLatencyBands}). Pure lookup, mirrors {@link bucketedCycles}.
+ */
+export function latencyBandIndex(dividend: number, platform: Platform = activePlatform): number {
+  const magnitude = Math.abs(Math.trunc(dividend));
+  const profile = PLATFORM_PROFILES[platform];
+  for (let index = 0; index < profile.buckets.length; index += 1) {
+    if (magnitude < profile.buckets[index].ceiling) {
+      return index;
+    }
+  }
+  return profile.buckets.length - 1;
+}
+
 let activePlatform: Platform = 'cortex-a7';
 
 export function setActivePlatform(platform: Platform): void {

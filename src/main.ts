@@ -1,11 +1,15 @@
 import './style.css';
+import './_teaching.css';
 
 import {
   attackIteration,
   createAttackState,
   generateSecretKey,
   getRecoveredCoeff,
+  PROBE_HIGH,
+  PROBE_LOW,
   statisticalAnalysis,
+  walkthroughCoefficient,
   type AttackState,
   type SecretKey,
 } from './attack';
@@ -19,8 +23,11 @@ import {
 } from './implementations';
 import {
   aggregateTimings,
+  getLatencyBands,
+  latencyBandIndex,
   PLATFORM_LABELS,
   setActivePlatform,
+  type LatencyBand,
   type Platform,
 } from './timing-model';
 
@@ -69,6 +76,7 @@ interface AppState {
   attackStartedAt: number | null;
   milestonesReached: number[];
   statusMessage: string;
+  walkthroughSecret: -1 | 0 | 1;
 }
 
 const QUOTE = '"Whether therefore ye eat, or drink, or whatsoever ye do, do all to the glory of God."';
@@ -283,6 +291,7 @@ const state: AppState = {
   attackStartedAt: null,
   milestonesReached: [],
   statusMessage: 'KyberSlash lab ready. Initial timing traces loaded.',
+  walkthroughSecret: 0,
 };
 
 function escapeHtml(value: string): string {
@@ -296,6 +305,18 @@ function escapeHtml(value: string): string {
 
 function setStatusMessage(message: string): void {
   state.statusMessage = message;
+}
+
+/**
+ * Inline first-mention gloss. Renders the term with a dotted underline (a visible
+ * affordance, not color-only) and a native tooltip; the definition is also
+ * exposed to assistive tech via aria-label so it isn't hover-only. Keyboard
+ * focusable so the tooltip is reachable without a mouse.
+ */
+function glossTerm(term: string, definition: string): string {
+  const safeTerm = escapeHtml(term);
+  const safeDef = escapeHtml(definition);
+  return `<span class="gloss" tabindex="0" role="note" title="${safeTerm}: ${safeDef}" aria-label="${safeTerm}: ${safeDef}">${safeTerm}</span>`;
 }
 
 function formatInteger(value: number): string {
@@ -905,6 +926,40 @@ function renderCodeLines(lines: readonly CodeLine[]): string {
     .join('\n');
 }
 
+/**
+ * 30-second Barrett-reduction intuition: floor(x/q) computed as
+ * (x * floor(2^32/q)) >> 32 swaps the one data-dependent instruction (udiv) for
+ * two fixed-latency ones (mul, shift). Shows a side-by-side instruction contrast
+ * and the same latency-band graphic going flat, so "constant-time" stops being a
+ * slogan.
+ */
+function renderBarrettIntuition(): string {
+  const sampleW = 192;
+  const dividend = 2 * sampleW + Math.floor(KYBER_PARAMS.q / 2);
+  return `
+    <section class="barrett" aria-label="Why the Barrett-reduction fix is constant-time">
+      <header class="barrett-head">
+        <span class="barrett-eyebrow">The fix, in 30 seconds</span>
+        <h3>Why multiply-then-shift can&rsquo;t leak</h3>
+        <p class="barrett-lead">${glossTerm('Barrett reduction', 'replacing a divide-by-constant with a precomputed multiply and a bit shift')} computes the exact same result as <code>floor(x / 3329)</code> — but by <em>multiplying</em> by the precomputed constant <code>floor(2<sup>32</sup>/3329) = ${formatInteger(BARRETT_INV_Q)}</code> and shifting right by 32. On a CPU, <code>mul</code> and <code>shift</code> take the <strong>same number of cycles no matter what the data is</strong>; only the divide (${glossTerm('udiv', 'the CPU&rsquo;s hardware integer-divide instruction, whose latency depends on operand size')}) varies with the operand. Remove the divide and you remove the leak.</p>
+      </header>
+      <div class="barrett-compare">
+        <article class="barrett-col barrett-col--danger">
+          <h4>Vulnerable · one divide</h4>
+          <code class="barrett-instr">t = (2&middot;w + q/2) <span class="hot">/ q</span></code>
+          <p class="barrett-note"><span class="barrett-tag barrett-tag--danger">data-dependent</span> udiv latency tracks the operand — the step function you just saw.</p>
+        </article>
+        <article class="barrett-col barrett-col--safe">
+          <h4>Patched · multiply + shift</h4>
+          <code class="barrett-instr">t = ((2&middot;w + q/2) <span class="cool">&times; ${formatInteger(BARRETT_INV_Q)}) &gt;&gt; 32</span></code>
+          <p class="barrett-note"><span class="barrett-tag barrett-tag--safe">fixed-latency</span> mul and shift ignore the operand&rsquo;s magnitude — same cycles every time.</p>
+        </article>
+      </div>
+      ${renderFlatCostBands(dividend)}
+      <p class="barrett-flatline">Same operand, same number line — but now every band collapses to one fixed cost. Where the operand lands no longer changes the clock. That is what &ldquo;constant-time&rdquo; means, made mechanical.</p>
+    </section>`;
+}
+
 function renderSmokingGun(): string {
   const lines = state.codeMode === 'vulnerable' ? VULNERABLE_LINES : PATCHED_LINES;
   const annotations =
@@ -935,12 +990,133 @@ function renderSmokingGun(): string {
         <pre><code>${renderCodeLines(lines)}</code></pre>
       </div>
       <ul class="evidence-list">${annotations.map((item) => `<li>${item}</li>`).join('')}</ul>
+      ${renderBarrettIntuition()}
       <footer class="code-citations" aria-label="Where this code lives upstream">
         <span class="citations-label">Upstream</span>
         <a class="citation-chip" href="https://github.com/pq-crystals/kyber/blob/main/ref/poly.c" target="_blank" rel="noopener">pq-crystals/kyber · ref/poly.c</a>
         <a class="citation-chip" href="https://eprint.iacr.org/2024/1049" target="_blank" rel="noopener">KyberSlash paper · eprint 2024/1049</a>
         <a class="citation-chip" href="https://csrc.nist.gov/pubs/fips/203/final" target="_blank" rel="noopener">FIPS 203 · ML-KEM standard</a>
       </footer>
+    </section>`;
+}
+
+// Colors for the four udiv latency bands, cheapest -> costliest. Kept as CSS
+// classes so both light and dark themes can set AA-contrast fills/text.
+const BAND_TONES = ['band--fast', 'band--mid', 'band--slow', 'band--slowest'] as const;
+
+/**
+ * The "why division leaks" number line: draws the udiv latency bands (0–255,
+ * 256–2047, 2048–8191, 8192+) as colored segments with their cycle cost, and
+ * drops a marker for a chosen dividend so a learner SEES the operand's magnitude
+ * pick a cost. Bands are laid out on a log scale so every band is visible.
+ *
+ * `markerDividend` is the operand under the udiv instruction; `caption` names it.
+ */
+function renderLatencyBands(markerDividend: number, caption: string): string {
+  const bands = getLatencyBands(state.platform);
+  // Log-scaled x layout so the narrow 0–255 band and the wide 8192+ band are
+  // both legible. Domain is magnitude+1 (avoid log 0); cap the top for display.
+  const displayCeil = 16384;
+  const logMin = 0; // log2(1)
+  const logMax = Math.log2(displayCeil);
+  const toX = (mag: number): number => {
+    const clamped = Math.max(1, Math.min(displayCeil, mag));
+    return ((Math.log2(clamped) - logMin) / (logMax - logMin)) * 100;
+  };
+
+  const activeBand = latencyBandIndex(markerDividend, state.platform);
+
+  const segments = bands
+    .map((band: LatencyBand, index: number) => {
+      const start = toX(band.floor === 0 ? 1 : band.floor);
+      const end = Number.isFinite(band.ceiling) ? toX(band.ceiling) : 100;
+      const width = Math.max(0, end - start);
+      const isActive = index === activeBand;
+      return `<div class="band-seg ${BAND_TONES[index] ?? 'band--slowest'}${isActive ? ' is-active' : ''}" style="left:${start.toFixed(2)}%;width:${width.toFixed(2)}%">
+          <span class="band-cycles">~${band.cycles} cyc</span>
+          <span class="band-range">${band.label}</span>
+        </div>`;
+    })
+    .join('');
+
+  const markerX = toX(Math.abs(markerDividend));
+  const activeCycles = bands[activeBand]?.cycles ?? 0;
+
+  return `
+    <figure class="bands-figure">
+      <figcaption class="bands-caption">${caption}</figcaption>
+      <div class="bands-track" role="img" aria-label="Number line of the division operand magnitude split into udiv latency bands; the current operand ${formatInteger(markerDividend)} lands in the ${bands[activeBand]?.label ?? ''} band costing about ${activeCycles} cycles">
+        ${segments}
+        <div class="band-marker" style="left:${markerX.toFixed(2)}%">
+          <span class="band-marker-dot"></span>
+          <span class="band-marker-tag">dividend ${formatInteger(markerDividend)} → ~${activeCycles} cyc</span>
+        </div>
+      </div>
+    </figure>`;
+}
+
+/**
+ * The patched counterpart to {@link renderLatencyBands}: the same log-scaled
+ * number line, but every band is greyed to one flat cost. The marker still sits
+ * at the operand's magnitude to prove the point — its position no longer changes
+ * the cost, because there is only one cost.
+ */
+function renderFlatCostBands(markerDividend: number): string {
+  const bands = getLatencyBands(state.platform);
+  const displayCeil = 16384;
+  const logMax = Math.log2(displayCeil);
+  const toX = (mag: number): number => {
+    const clamped = Math.max(1, Math.min(displayCeil, mag));
+    return (Math.log2(clamped) / logMax) * 100;
+  };
+
+  const segments = bands
+    .map((band: LatencyBand) => {
+      const start = toX(band.floor === 0 ? 1 : band.floor);
+      const end = Number.isFinite(band.ceiling) ? toX(band.ceiling) : 100;
+      const width = Math.max(0, end - start);
+      return `<div class="band-seg band--flat" style="left:${start.toFixed(2)}%;width:${width.toFixed(2)}%">
+          <span class="band-cycles">~8 cyc</span>
+          <span class="band-range">${band.label}</span>
+        </div>`;
+    })
+    .join('');
+
+  const markerX = toX(Math.abs(markerDividend));
+  return `
+    <figure class="bands-figure">
+      <figcaption class="bands-caption">Patched path · one fixed cost across every operand (${escapeHtml(PLATFORM_LABELS[state.platform])})</figcaption>
+      <div class="bands-track bands-track--flat" role="img" aria-label="The same operand number line under Barrett reduction: every band costs a fixed 8 cycles, so the operand ${formatInteger(markerDividend)} no longer changes the timing">
+        ${segments}
+        <div class="band-marker band-marker--flat" style="left:${markerX.toFixed(2)}%">
+          <span class="band-marker-dot"></span>
+          <span class="band-marker-tag">dividend ${formatInteger(markerDividend)} → ~8 cyc (fixed)</span>
+        </div>
+      </div>
+    </figure>`;
+}
+
+/**
+ * The teaching panel that makes the leak mechanism visible: explains that udiv
+ * time is a STEP FUNCTION of operand magnitude, then shows the current
+ * vulnerable coefficient landing in a band vs. the patched path pinned flat.
+ */
+function renderWhyDivisionLeaks(): string {
+  // A representative in-range coefficient's dividend for the marker. Uses the
+  // same 2*w + q/2 form the real poly_tomsg divides on (w near the boundary so
+  // the marker sits where the attack actually probes).
+  const sampleW = 192;
+  const vulnerableDividend = 2 * sampleW + Math.floor(KYBER_PARAMS.q / 2);
+
+  return `
+    <section class="why-leak" aria-label="Why division time leaks the secret">
+      <header class="why-leak-head">
+        <span class="why-leak-eyebrow">Mechanism</span>
+        <h3>Why the division time leaks</h3>
+        <p class="why-leak-lead">The CPU's hardware divide instruction (${glossTerm('udiv', 'the CPU&rsquo;s hardware integer-divide instruction')}) does not take a fixed number of cycles. Its latency is a <strong>step function of the operand&rsquo;s magnitude</strong>: bigger dividend, more cycles. Because the dividend <code>2&middot;w + q/2</code> depends on the secret-derived value <code>w</code>, the clock itself moves with the secret.</p>
+      </header>
+      ${renderLatencyBands(vulnerableDividend, `Vulnerable path · the operand&rsquo;s magnitude picks the cost (${escapeHtml(PLATFORM_LABELS[state.platform])})`)}
+      <p class="why-leak-flat-note">${glossTerm('Barrett reduction', 'computing floor(x/q) with a fixed-cost multiply and shift instead of a data-dependent divide')} (the patch) replaces that divide with a multiply and a shift — instructions whose latency does <em>not</em> depend on the data — so every coefficient costs the same fixed <strong>~8 cycles</strong> and the marker never moves. That flat line is what the fix in Exhibit&nbsp;1 buys you.</p>
     </section>`;
 }
 
@@ -987,17 +1163,18 @@ function renderOscilloscope(): string {
         <h2>The oscilloscope</h2>
       </div>
       ${renderTryThis(1)}
+      ${renderWhyDivisionLeaks()}
       <div class="verdict verdict--${verdictTone}" role="status">
         <div class="verdict-row">
-          <span class="verdict-pill">Variance ratio</span>
+          <span class="verdict-pill" tabindex="0" title="How much wider the vulnerable timing spread is than the patched one. A wide spread means the secret is moving the clock." aria-label="Variance ratio: how much wider the vulnerable timing spread is than the patched one. A wide spread means the secret is moving the clock.">Variance ratio</span>
           <strong>${samplesReady ? spreadRatioLabel : '—'}</strong>
         </div>
         <div class="verdict-row">
-          <span class="verdict-pill">Mean delta</span>
+          <span class="verdict-pill" tabindex="0" title="How many more CPU cycles the vulnerable path averages than the patched path. This gap is the leak, in cycles." aria-label="Mean delta: how many more CPU cycles the vulnerable path averages than the patched path. This gap is the leak, in cycles.">Mean delta</span>
           <strong>${formatInteger(deltaCycles)} cycles</strong>
         </div>
         <div class="verdict-row">
-          <span class="verdict-pill">Mean ratio</span>
+          <span class="verdict-pill" tabindex="0" title="The vulnerable mean divided by the patched mean. Above 1.0 means the vulnerable path is consistently slower." aria-label="Mean ratio: the vulnerable mean divided by the patched mean. Above 1.0 means the vulnerable path is consistently slower.">Mean ratio</span>
           <strong>${samplesReady ? `${formatDecimal(ratio, 2)}×` : '—'}</strong>
         </div>
         <p class="verdict-headline">${verdictHeadline}</p>
@@ -1040,6 +1217,99 @@ function renderOscilloscope(): string {
           : ''
       }
     </section>`;
+}
+
+/**
+ * Slow-motion walkthrough of the two-probe attack for ONE coefficient. Shows the
+ * chosen ciphertext offsets t=191 / t=192, the device adding the hidden secret,
+ * each dividend landing below or above the ~2048 latency boundary, the fast/slow
+ * readout, and the truth table filling in to reveal the coefficient. All numbers
+ * come from walkthroughCoefficient() — the same model the live attack uses.
+ */
+function renderProbeWalkthrough(): string {
+  const secret = state.walkthroughSecret;
+  const w = walkthroughCoefficient(secret);
+  const signLabel = (s: number): string => (s > 0 ? '+1' : s < 0 ? '−1' : '0');
+
+  const probeCard = (
+    step: { probe: number; w: number; dividend: number; cycles: number; slow: boolean },
+    note: string,
+  ): string => `
+    <article class="probe-card ${step.slow ? 'is-slow' : 'is-fast'}">
+      <header class="probe-card-head">
+        <span class="probe-chip">probe t=${step.probe}</span>
+        <span class="probe-verdict ${step.slow ? 'is-slow' : 'is-fast'}">${step.slow ? 'SLOW' : 'FAST'}</span>
+      </header>
+      <p class="probe-math">device adds secret: <code>w = ${signLabel(secret)} + ${step.probe} = ${step.w}</code></p>
+      <p class="probe-math">dividend fed to udiv: <code>2&middot;${step.w} + q/2 = ${formatInteger(step.dividend)}</code></p>
+      ${renderBoundaryLine(step.dividend, step.slow)}
+      <p class="probe-readout">udiv latency <strong>~${formatDecimal(step.cycles, 0)} cycles</strong> — ${note}</p>
+    </article>`;
+
+  const rows = ([-1, 0, 1] as const)
+    .map((s) => {
+      const row = walkthroughCoefficient(s);
+      const active = s === secret;
+      return `<tr class="${active ? 'is-active' : ''}">
+        <th scope="row">s = ${signLabel(s)}</th>
+        <td class="${row.low.slow ? 'cell-slow' : 'cell-fast'}">${row.low.slow ? 'slow' : 'fast'}</td>
+        <td class="${row.high.slow ? 'cell-slow' : 'cell-fast'}">${row.high.slow ? 'slow' : 'fast'}</td>
+        <td class="cell-infer">${active ? '◀ this coefficient' : ''}</td>
+      </tr>`;
+    })
+    .join('');
+
+  return `
+    <section class="walkthrough" aria-label="Two-probe attack walkthrough for a single coefficient">
+      <header class="walkthrough-head">
+        <span class="walkthrough-eyebrow">Slow motion · one coefficient</span>
+        <h3>How two probes read one secret coefficient</h3>
+        <p class="walkthrough-lead">The attacker cannot see the secret <code>s &isin; {&minus;1, 0, +1}</code>. It sends two crafted ciphertexts whose offsets straddle the latency boundary, and lets the timing decide. Pick a hidden secret and watch the inference — the grid below is just this trick run 768 times.</p>
+      </header>
+      <div class="walkthrough-picker" role="group" aria-label="Choose the hidden secret coefficient to trace">
+        <span class="walkthrough-picker-label">Hidden secret s =</span>
+        ${([-1, 0, 1] as const)
+          .map(
+            (s) =>
+              `<button type="button" class="chip ${secret === s ? 'is-active' : ''}" data-action="walk-${s < 0 ? 'neg' : s > 0 ? 'pos' : 'zero'}" aria-pressed="${secret === s}">${signLabel(s)}</button>`,
+          )
+          .join('')}
+      </div>
+      <div class="probe-pair">
+        ${probeCard(w.low, `t=${PROBE_LOW} only crosses the boundary when s = +1`)}
+        ${probeCard(w.high, `t=${PROBE_HIGH} crosses when s is 0 or +1`)}
+      </div>
+      <div class="truth-panel">
+        <table class="truth-table">
+          <caption class="sr-only">Truth table mapping each secret value to its fast/slow timing pair</caption>
+          <thead>
+            <tr><th scope="col">secret</th><th scope="col">t=191</th><th scope="col">t=192</th><th scope="col"></th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p class="truth-result" role="status">Timing pair <strong>(${w.low.slow ? 'slow' : 'fast'}, ${w.high.slow ? 'slow' : 'fast'})</strong> is unique to <strong>s = ${signLabel(w.inferred)}</strong> — the coefficient is recovered without ever reading the key.</p>
+      </div>
+    </section>`;
+}
+
+/**
+ * A compact one-dimensional band line for the walkthrough: shows the ~2048
+ * boundary and where a single dividend lands relative to it (fast/slow side).
+ */
+function renderBoundaryLine(dividend: number, slow: boolean): string {
+  // Zoom on 2020..2075 so the 2048 boundary and the 2044/2046/2048/2050
+  // dividends are visibly distinct. Clamp for display.
+  const lo = 2020;
+  const hi = 2075;
+  const pos = Math.max(0, Math.min(100, ((dividend - lo) / (hi - lo)) * 100));
+  const boundaryPos = ((2048 - lo) / (hi - lo)) * 100;
+  return `
+    <div class="boundary-line" role="img" aria-label="Dividend ${formatInteger(dividend)} lands on the ${slow ? 'slow' : 'fast'} side of the 2048 latency boundary">
+      <span class="boundary-band boundary-band--fast" style="width:${boundaryPos.toFixed(2)}%"></span>
+      <span class="boundary-band boundary-band--slow" style="left:${boundaryPos.toFixed(2)}%;width:${(100 - boundaryPos).toFixed(2)}%"></span>
+      <span class="boundary-tick" style="left:${boundaryPos.toFixed(2)}%"><span class="boundary-tick-label">2048</span></span>
+      <span class="boundary-dot ${slow ? 'is-slow' : 'is-fast'}" style="left:${pos.toFixed(2)}%"></span>
+    </div>`;
 }
 
 function renderRecoveryGrid(): string {
@@ -1204,7 +1474,7 @@ function renderAttack(): string {
         <div>
           <p class="mini-label">Attack variant</p>
           <strong>KyberSlash1 (poly_tomsg), modeled against ML-KEM-768</strong>
-          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. The attacker submits crafted ciphertexts, measures the modelled <code>poly_tomsg</code> division latency, and infers each secret coefficient from which udiv bucket boundary the timing crosses — the secret is never read directly, it emerges statistically from the noisy cycle counts.</p>
+          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. The attacker submits crafted ciphertexts, measures the modelled ${glossTerm('poly_tomsg', 'the decryption step that turns a polynomial back into the message bits')} division latency, and infers each secret coefficient from which ${glossTerm('udiv', 'the CPU&rsquo;s hardware integer-divide instruction')} bucket boundary the timing crosses — the secret is never read directly, it emerges statistically from the noisy cycle counts.</p>
           <p class="attack-fieldnote">Field result: in the original work a real Kyber512 key fell on a Raspberry Pi 2 (Cortex-A7) within 2–4 hours across 10 of 10 trials.</p>
         </div>
         <div class="attack-mode-toggle">
@@ -1219,6 +1489,7 @@ function renderAttack(): string {
         <button type="button" class="chip chip--speed ${state.attackSpeed === 16 ? 'is-active' : ''}" data-action="speed-16" aria-pressed="${state.attackSpeed === 16}">16×</button>
         <span class="speed-hint">${state.attackSpeed === 1 ? 'real-time streaming' : state.attackSpeed === 4 ? 'enough to skim a recovery' : 'fast-forward to the verified match'}</span>
       </div>
+      ${renderProbeWalkthrough()}
       ${renderRecoveryGrid()}
       <div class="attack-layout">
         <div class="attack-card">
@@ -1326,7 +1597,17 @@ function render(focusTarget?: string): void {
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.statusMessage)}</div>
       <header class="topbar">
         <p class="topbar-label">Educational side-channel lab</p>
-        <strong>ML-KEM-768 / Kyber768 parameters: n=${KYBER_PARAMS.n}, k=${KYBER_PARAMS.k}, q=${KYBER_PARAMS.q}, eta1=${KYBER_PARAMS.eta1}, eta2=${KYBER_PARAMS.eta2}, du=${KYBER_PARAMS.du}, dv=${KYBER_PARAMS.dv}</strong>
+        <strong>ML-KEM-768 — the post-quantum key exchange whose reference code leaked its secret key through division timing.</strong>
+        <details class="param-disclosure">
+          <summary>Kyber parameters (for the curious)</summary>
+          <dl class="param-list">
+            <div><dt>n = ${KYBER_PARAMS.n}</dt><dd>coefficients per polynomial</dd></div>
+            <div><dt>k = ${KYBER_PARAMS.k}</dt><dd>polynomials in the secret vector (768 = 3×256 coefficients total)</dd></div>
+            <div><dt>q = ${KYBER_PARAMS.q}</dt><dd>the prime modulus — the constant every coefficient is divided by, and the source of the leak</dd></div>
+            <div><dt>η1 = ${KYBER_PARAMS.eta1}, η2 = ${KYBER_PARAMS.eta2}</dt><dd>noise widths of the centered binomial distribution the secret is sampled from (so each coefficient is small: −1, 0, or +1 here)</dd></div>
+            <div><dt>du = ${KYBER_PARAMS.du}, dv = ${KYBER_PARAMS.dv}</dt><dd>ciphertext compression bit-widths — dv drives the KyberSlash2 (poly_compress) variant</dd></div>
+          </dl>
+        </details>
       </header>
       ${renderHero()}
       <section class="status-strip">
@@ -1503,6 +1784,21 @@ app.addEventListener('click', (event) => {
       state.attackSpeed = 16;
       setStatusMessage('Playback speed: 16× (fast-forward).');
       render('speed-16');
+      break;
+    case 'walk-neg':
+      state.walkthroughSecret = -1;
+      setStatusMessage('Walkthrough: tracing a hidden secret coefficient of −1.');
+      render('walk-neg');
+      break;
+    case 'walk-zero':
+      state.walkthroughSecret = 0;
+      setStatusMessage('Walkthrough: tracing a hidden secret coefficient of 0.');
+      render('walk-zero');
+      break;
+    case 'walk-pos':
+      state.walkthroughSecret = 1;
+      setStatusMessage('Walkthrough: tracing a hidden secret coefficient of +1.');
+      render('walk-pos');
       break;
     case 'start-tour':
       void runTour();

@@ -42,8 +42,8 @@ import { simulatedDivCycles } from './timing-model';
 const KYBER_Q = 3329;
 
 /** Two attacker-chosen ciphertext offsets straddling the udiv bucket boundary. */
-const PROBE_LOW = 191; // crossed only by s = +1
-const PROBE_HIGH = 192; // crossed by s in {0, +1}
+export const PROBE_LOW = 191; // crossed only by s = +1
+export const PROBE_HIGH = 192; // crossed by s in {0, +1}
 const PROBES = [PROBE_LOW, PROBE_HIGH] as const;
 
 const MIN_SAMPLES_PER_PROBE = 12;
@@ -156,6 +156,51 @@ function inferCoefficient(lowMean: number, highMean: number, threshold: number):
     return 0; // only the t=192 boundary crossed
   }
   return -1; // neither crossed
+}
+
+/** One probe's outcome in the single-coefficient walkthrough. */
+export interface ProbeStep {
+  probe: number;
+  /** w = s + probe, the decrypted coefficient the device divides on. */
+  w: number;
+  /** The dividend 2*w + q/2 that the udiv instruction actually processes. */
+  dividend: number;
+  /** Noiseless cycle cost from the platform model. */
+  cycles: number;
+  /** True when this probe's dividend lands at/above the ~2048 boundary (slow). */
+  slow: boolean;
+}
+
+export interface CoefficientWalkthrough {
+  secret: -1 | 0 | 1;
+  threshold: number;
+  low: ProbeStep;
+  high: ProbeStep;
+  inferred: -1 | 0 | 1;
+}
+
+/**
+ * Hand-crank the two-probe attack for ONE coefficient, exposing every
+ * intermediate value so the UI can animate it: the chosen probe offset, the
+ * device adding the hidden secret, the resulting dividend, which side of the
+ * boundary it lands on, and the fast/slow readout that reconstructs the secret.
+ *
+ * This is the SAME math the live attack runs (oracleQueryTime + inferCoefficient
+ * + boundaryThreshold), just single-stepped and noiseless so the causal chain is
+ * legible. Nothing is fabricated — feed it s and it recomputes the honest result.
+ */
+export function walkthroughCoefficient(secret: -1 | 0 | 1): CoefficientWalkthrough {
+  const threshold = boundaryThreshold();
+  const step = (probe: number): ProbeStep => {
+    const w = secret + probe;
+    const dividend = 2 * normalizeCoefficient(w) + Math.floor(KYBER_Q / 2);
+    const cycles = simulatedDivCycles(dividend, KYBER_Q, false);
+    return { probe, w, dividend, cycles, slow: cycles >= threshold };
+  };
+  const low = step(PROBE_LOW);
+  const high = step(PROBE_HIGH);
+  const inferred = inferCoefficient(low.cycles, high.cycles, threshold);
+  return { secret, threshold, low, high, inferred };
 }
 
 /**

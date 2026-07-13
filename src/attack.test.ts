@@ -7,6 +7,7 @@ import {
   recoveredKeyFromState,
   runAttack,
   statisticalAnalysis,
+  walkthroughCoefficient,
   type SecretKey,
 } from './attack';
 import { setActivePlatform } from './timing-model';
@@ -65,6 +66,37 @@ describe('oracleQueryTime is a real boundary-crossing leak', () => {
     // All secret values collapse to the same constant-time cost (within jitter).
     expect(Math.abs(a - b)).toBeLessThan(0.3);
     expect(Math.abs(b - c)).toBeLessThan(0.3);
+  });
+});
+
+describe('single-coefficient walkthrough matches the live attack model', () => {
+  it('reproduces the (fast/slow) truth table and infers the true secret on A7', () => {
+    setActivePlatform('cortex-a7');
+    const minus = walkthroughCoefficient(-1);
+    const zero = walkthroughCoefficient(0);
+    const plus = walkthroughCoefficient(1);
+
+    // The crux truth table the demo animates.
+    expect([minus.low.slow, minus.high.slow]).toEqual([false, false]);
+    expect([zero.low.slow, zero.high.slow]).toEqual([false, true]);
+    expect([plus.low.slow, plus.high.slow]).toEqual([true, true]);
+
+    // The walkthrough must recover exactly the secret it was fed — no fabrication.
+    expect(minus.inferred).toBe(-1);
+    expect(zero.inferred).toBe(0);
+    expect(plus.inferred).toBe(1);
+
+    // Dividends are the honest 2*w + q/2 straddling the 2048 boundary.
+    expect(zero.low.dividend).toBe(2046);
+    expect(zero.high.dividend).toBe(2048);
+  });
+
+  it('still infers correctly on the narrower-signal cortex-m4', () => {
+    setActivePlatform('cortex-m4');
+    for (const s of [-1, 0, 1] as const) {
+      expect(walkthroughCoefficient(s).inferred).toBe(s);
+    }
+    setActivePlatform('cortex-a7');
   });
 });
 

@@ -4,6 +4,8 @@
 
 Browser-based educational simulation of the KyberSlash timing attacks on ML-KEM (Kyber), based on the 2025 TCHES CHES Best Paper by Daniel J. Bernstein, Karthikeyan Bhargavan, Shivam Bhasin, Anupam Chattopadhyay, Tee Kiah Chia, Matthias J. Kannwischer, Franziskus Kiefer, Thales B. Paiva, Prasanna Ravi, and Goutam Tamvada. The demo shows how integer division by the Kyber modulus q = 3329 in the reference `poly_tomsg` and `poly_compress` functions leaks secret information through variable CPU timing on ARM Cortex-A7 and Cortex-M4 processors. Because JavaScript cannot measure real CPU division latency reliably, the browser uses a deterministic timing model that reproduces the paper's leakage behavior instead of real clock measurements. The lab shows the vulnerable code, the fixed Barrett-reduction replacement, a live attack simulation that recovers the vulnerable secret key, and the failed attack against the patched implementation.
 
+To make the mechanism itself visible — not just asserted — the lab draws the actual causal chain on screen: a **udiv latency-band number line** where the four cost buckets (~7 / ~12 / ~20 / ~30 cycles on Cortex-A7) are colored bands and the current operand lands in one, so a learner sees the operand's magnitude *pick* the cost; a **single-coefficient two-probe walkthrough** that hand-cranks the attack for one secret, showing probes `t=191` and `t=192`, the device adding the hidden `s ∈ {−1,0,+1}`, each dividend landing below or above the ~2048 boundary, and the fast/slow truth table filling in to reveal the coefficient before the full 768-cell grid runs the same trick 768 times; and a **Barrett-reduction intuition panel** that puts the vulnerable `/ q` beside the patched `(x × 1,290,168) >> 32` and shows the same band graphic collapsing to one fixed ~8-cycle cost, making "constant-time" mechanical rather than a slogan. First-mention jargon (`udiv`, `poly_tomsg`, Barrett reduction) is glossed inline, and the raw `n/k/q/η/du/dv` parameters sit behind a disclosure so newcomers meet the story before the parameter dump.
+
 ## When to Use It
 
 - Understanding why “NIST standardized” does not mean “every implementation is safe”
@@ -63,6 +65,9 @@ npm run dev
 
 ![KyberSlash — a vulnerable timing trace swings while the patched trace stays flat, and the 768-coefficient ML-KEM-768 secret key is recovered](public/poster.svg)
 
+- **Why division leaks** — a udiv latency-band number line makes the invisible visible: the operand's magnitude picks a cost bucket, so the clock moves with the secret.
+- **Two-probe walkthrough** — one coefficient recovered in slow motion (probes `t=191`/`t=192`, boundary crossing, fast/slow truth table) so the mass recovery reads as "the same trick 768 times."
+- **Barrett in 30 seconds** — the vulnerable divide sits beside the patched multiply-and-shift, and the band graphic goes flat, so "constant-time" is shown, not asserted.
 - **Flip to patched** — the same dataset on the same axes; the vulnerable signal swings and the patched signal goes flat. The signature "aha" moment.
 - **Live recovery** — 768 coefficients reconstructed one by one, with a gold pill that confirms a verified match against the real key.
 - **Two platforms** — toggle a simulated Cortex-A7 (Raspberry Pi 2) or Cortex-M4 to see how the leak narrows but persists.

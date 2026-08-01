@@ -1,9 +1,14 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { runAttack, statisticalAnalysis, type SecretKey } from '../src/attack';
+import { activeProbes, runAttack, statisticalAnalysis, type SecretKey } from '../src/attack';
 import { KYBER_PARAMS, polyTomsgPatched, polyTomsgVulnerable } from '../src/implementations';
-import { simulatedDecapsulationTime, simulatedDivCycles } from '../src/timing-model';
+import {
+  kyberSlash1Dividend,
+  primaryCoefficientStep,
+  simulatedDecapsulationTime,
+  simulatedDivCycles,
+} from '../src/timing-model';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -71,18 +76,30 @@ async function main(): Promise<void> {
   const patchedFull = await runAttack(secretKey, false, 20000);
   assert(patchedFull.finalState.recoveredBits === 0, 'patched attack should recover zero bits');
 
-  // Probe-keyed timing samples (Cortex-A7 udiv levels straddling the 2048
-  // bucket boundary; decision threshold ~17.5 cycles). Probe 191 sits below the
-  // boundary and probe 192 lands above it -> the s=0 boundary-crossing signature.
+  // Probe-keyed timing samples for the ACTIVE target. On the default Cortex-A7
+  // profile the probes are coefficients 832 / 833, straddling the numerator-3329
+  // `divsi3` step the paper measures at +20 cycles (§5.1.1-§5.1.2); on Cortex-M4
+  // they would be 191 / 192 straddling the Table 4 `udiv` crossover at 2^11.
+  // Derived rather than hardcoded so this check cannot drift from the model.
+  const [probeLow, probeHigh] = activeProbes();
+  const step = primaryCoefficientStep();
+  const fastLevel = simulatedDivCycles(kyberSlash1Dividend(probeLow), KYBER_PARAMS.q, false);
+  const slowLevel = simulatedDivCycles(kyberSlash1Dividend(step.coefficient), KYBER_PARAMS.q, false);
+  const decisionThreshold = (fastLevel + slowLevel) / 2;
+  const jitter = [0, 0.02, -0.01, 0.01, -0.02, 0.03, -0.03, 0.0, 0.02, -0.01, 0.01, -0.02];
+  const around = (level: number): number[] => jitter.map((delta) => level + delta);
+
+  // Vulnerable: the low probe stays below the step, the high probe lands on it
+  // -> the s = 0 signature, a full step apart.
   const vulnerableProfile = new Map<number, number[]>([
-    [191, [14.98, 15.01, 14.99, 15.0, 15.02, 14.97, 15.0, 14.99, 15.01, 14.98, 15.0, 14.99]],
-    [192, [20.0, 19.98, 20.01, 19.99, 20.02, 19.97, 20.0, 20.01, 19.99, 20.0, 19.98, 20.01]],
+    [probeLow, around(fastLevel)],
+    [probeHigh, around(slowLevel)],
   ]);
   // Patched: Barrett reduction is constant-time, so both probes hug the
-  // threshold with only measurement jitter -> no boundary is crossed.
+  // decision threshold with only measurement jitter -> no step is ever crossed.
   const patchedProfile = new Map<number, number[]>([
-    [191, [17.5, 17.48, 17.52, 17.49, 17.51, 17.5, 17.47, 17.53, 17.5, 17.49, 17.51, 17.5]],
-    [192, [17.49, 17.51, 17.5, 17.52, 17.48, 17.5, 17.51, 17.49, 17.5, 17.52, 17.48, 17.5]],
+    [probeLow, around(decisionThreshold)],
+    [probeHigh, around(decisionThreshold)],
   ]);
 
   const vulnerableAnalysis = statisticalAnalysis(vulnerableProfile);

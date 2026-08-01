@@ -1040,6 +1040,13 @@ blockquote footer {
   font-size: 0.82rem;
   color: var(--muted);
 }
+/* The toggle hint names the active target's biggest exploitable division step
+   (+20 cycles at coefficient 833 on Cortex-A7, +2 at 192 on Cortex-M4), so the
+   emphasised figures need to read against --muted body text. */
+.platform-current strong {
+  color: var(--text);
+  font-weight: 700;
+}
 
 .bridge {
   display: grid;

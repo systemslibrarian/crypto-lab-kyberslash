@@ -2,12 +2,11 @@ import './style.css';
 import './_teaching.css';
 
 import {
+  activeProbes,
   attackIteration,
   createAttackState,
   generateSecretKey,
   getRecoveredCoeff,
-  PROBE_HIGH,
-  PROBE_LOW,
   statisticalAnalysis,
   walkthroughCoefficient,
   type AttackState,
@@ -23,9 +22,16 @@ import {
 } from './implementations';
 import {
   aggregateTimings,
-  getLatencyBands,
-  latencyBandIndex,
+  coefficientSteps,
+  displayBandIndex,
+  getDisplayBands,
+  getPlatformProfile,
+  kyberSlash1Dividend,
+  KYBERSLASH1_NUMERATOR_MAX,
+  KYBERSLASH1_NUMERATOR_MIN,
+  patchedDivCycles,
   PLATFORM_LABELS,
+  primaryCoefficientStep,
   setActivePlatform,
   type LatencyBand,
   type Platform,
@@ -878,6 +884,10 @@ function renderHero(): string {
   const platformLabel = PLATFORM_LABELS[state.platform];
   const altPlatform: Platform = state.platform === 'cortex-a7' ? 'cortex-m4' : 'cortex-a7';
   const altLabel = PLATFORM_LABELS[altPlatform];
+  // Names the leak's size on the active target, so the toggle is a comparison
+  // rather than a decoration: +20 cycles at coefficient 833 on Cortex-A7 (the
+  // __divsi3 jump), +2 at coefficient 192 on Cortex-M4 (the udiv crossover).
+  const primaryStep = primaryCoefficientStep(state.platform);
   return `
     <section class="hero-shell">
       <div class="hero-copy">
@@ -905,7 +915,7 @@ function renderHero(): string {
           <span class="platform-label">Target platform</span>
           <button type="button" class="chip ${state.platform === 'cortex-a7' ? 'is-active' : ''}" data-action="set-platform-a7" aria-pressed="${state.platform === 'cortex-a7'}" ${state.attackRunning || state.measuring ? 'disabled' : ''}>Cortex-A7</button>
           <button type="button" class="chip ${state.platform === 'cortex-m4' ? 'is-active' : ''}" data-action="set-platform-m4" aria-pressed="${state.platform === 'cortex-m4'}" ${state.attackRunning || state.measuring ? 'disabled' : ''}>Cortex-M4</button>
-          <span class="platform-current">${state.attackRunning || state.measuring ? 'platform locked while a run is in progress' : `simulating ${escapeHtml(platformLabel)} · click to switch to ${escapeHtml(altLabel)}`}</span>
+          <span class="platform-current">${state.attackRunning || state.measuring ? 'platform locked while a run is in progress' : `simulating ${escapeHtml(platformLabel)} — biggest exploitable division step here is <strong>+${primaryStep.jump} cycle${primaryStep.jump === 1 ? '' : 's'}</strong> at coefficient <strong>${formatInteger(primaryStep.coefficient)}</strong> · click to switch to ${escapeHtml(altLabel)}`}</span>
         </div>
         <div class="hero-notes">
           <span class="pill pill--danger">KyberSlash1: decapsulation / poly_tomsg</span>
@@ -928,35 +938,37 @@ function renderCodeLines(lines: readonly CodeLine[]): string {
 
 /**
  * 30-second Barrett-reduction intuition: floor(x/q) computed as
- * (x * floor(2^32/q)) >> 32 swaps the one data-dependent instruction (udiv) for
- * two fixed-latency ones (mul, shift). Shows a side-by-side instruction contrast
- * and the same latency-band graphic going flat, so "constant-time" stops being a
- * slogan.
+ * (x * (floor(2^32/q) + 1)) >> 32 swaps the one data-dependent operation (the
+ * division — a hardware `udiv` on Cortex-M4, a call to the `__divsi3` software
+ * routine on the paper's Cortex-A7 build) for two fixed-latency instructions
+ * (mul, shift). Shows a side-by-side instruction contrast and the same
+ * latency-band graphic going flat, so "constant-time" stops being a slogan.
  */
 function renderBarrettIntuition(): string {
-  const sampleW = 192;
-  const dividend = 2 * sampleW + Math.floor(KYBER_PARAMS.q / 2);
+  const profile = getPlatformProfile(state.platform);
+  const [, highProbe] = activeProbes();
+  const dividend = kyberSlash1Dividend(highProbe);
   return `
     <section class="barrett" aria-label="Why the Barrett-reduction fix is constant-time">
       <header class="barrett-head">
         <span class="barrett-eyebrow">The fix, in 30 seconds</span>
         <h3>Why multiply-then-shift can&rsquo;t leak</h3>
-        <p class="barrett-lead">${glossTerm('Barrett reduction', 'replacing a divide-by-constant with a precomputed multiply and a bit shift')} computes the exact same result as <code>floor(x / 3329)</code> — but by <em>multiplying</em> by the precomputed constant <code>floor(2<sup>32</sup>/3329) = ${formatInteger(BARRETT_INV_Q)}</code> and shifting right by 32. On a CPU, <code>mul</code> and <code>shift</code> take the <strong>same number of cycles no matter what the data is</strong>; only the divide (${glossTerm('udiv', 'the CPU&rsquo;s hardware integer-divide instruction, whose latency depends on operand size')}) varies with the operand. Remove the divide and you remove the leak.</p>
+        <p class="barrett-lead">${glossTerm('Barrett reduction', 'replacing a divide-by-constant with a precomputed multiply and a bit shift')} computes the exact same result as <code>floor(x / 3329)</code> — but by <em>multiplying</em> by the precomputed constant <code>floor(2<sup>32</sup>/3329) + 1 = ${formatInteger(BARRETT_INV_Q)}</code> and shifting right by 32. On a CPU, <code>mul</code> and <code>shift</code> take the <strong>same number of cycles no matter what the data is</strong>; only the division varies with the operand — and on this target that division is <code>${escapeHtml(profile.divisionOp)}</code>. Remove the division and you remove the leak.</p>
       </header>
       <div class="barrett-compare">
         <article class="barrett-col barrett-col--danger">
-          <h4>Vulnerable · one divide</h4>
-          <code class="barrett-instr">t = (2&middot;w + q/2) <span class="hot">/ q</span></code>
-          <p class="barrett-note"><span class="barrett-tag barrett-tag--danger">data-dependent</span> udiv latency tracks the operand — the step function you just saw.</p>
+          <h4>Vulnerable · one division</h4>
+          <code class="barrett-instr">t = (2&middot;w + 1664) <span class="hot">/ q</span></code>
+          <p class="barrett-note"><span class="barrett-tag barrett-tag--danger">data-dependent</span> <code>${escapeHtml(profile.divisionOp)}</code> cost tracks the numerator — the step function you just saw.</p>
         </article>
         <article class="barrett-col barrett-col--safe">
           <h4>Patched · multiply + shift</h4>
-          <code class="barrett-instr">t = ((2&middot;w + q/2) <span class="cool">&times; ${formatInteger(BARRETT_INV_Q)}) &gt;&gt; 32</span></code>
-          <p class="barrett-note"><span class="barrett-tag barrett-tag--safe">fixed-latency</span> mul and shift ignore the operand&rsquo;s magnitude — same cycles every time.</p>
+          <code class="barrett-instr">t = ((2&middot;w + 1664) <span class="cool">&times; ${formatInteger(BARRETT_INV_Q)}) &gt;&gt; 32</span></code>
+          <p class="barrett-note"><span class="barrett-tag barrett-tag--safe">fixed-latency</span> mul and shift ignore the numerator&rsquo;s magnitude — same cycles every time.</p>
         </article>
       </div>
       ${renderFlatCostBands(dividend)}
-      <p class="barrett-flatline">Same operand, same number line — but now every band collapses to one fixed cost. Where the operand lands no longer changes the clock. That is what &ldquo;constant-time&rdquo; means, made mechanical.</p>
+      <p class="barrett-flatline">Same numerator, same number line — but now every band collapses to one fixed cost. Where the numerator lands no longer changes the clock. That is what &ldquo;constant-time&rdquo; means, made mechanical.</p>
     </section>`;
 }
 
@@ -965,8 +977,9 @@ function renderSmokingGun(): string {
   const annotations =
     state.codeMode === 'vulnerable'
       ? [
-          'The vulnerable line divides a secret-dependent dividend by q = 3329.',
-          'On Cortex-A7 the corresponding udiv latency varies by roughly 7 to 30 cycles; on Cortex-M4 the spread is smaller but still exploitable.',
+          'The vulnerable line divides a secret-dependent numerator 2·w + 1664 by q = 3329.',
+          'What performs that division is target-specific. On the paper’s Raspberry Pi 2 (Cortex-A7, gcc 8.3.0 -Os) no divide instruction runs at all: the compiler emits a call to the __divsi3 software routine, whose cost jumps by 20 cycles once the numerator reaches 3,329 — i.e. once the decrypted coefficient reaches 833 (paper §5.1.1–5.1.2).',
+          'On the Cortex-M4 (STM32F407VG) a hardware udiv does run, and the only crossover inside this line’s numerator range is 2^11 = 2,048, worth 2 cycles (paper Table 4). Smaller signal, same bug.',
           'Modern x86_64 often avoids the bug only because the compiler rewrites division into multiplication, but -Os can put division back.',
         ]
       : [
@@ -1000,123 +1013,224 @@ function renderSmokingGun(): string {
     </section>`;
 }
 
-// Colors for the four udiv latency bands, cheapest -> costliest. Kept as CSS
-// classes so both light and dark themes can set AA-contrast fills/text.
+// Colors for the latency bands, cheapest -> costliest. Kept as CSS classes so
+// both light and dark themes can set AA-contrast fills/text. The number of
+// bands is platform-dependent (four on Cortex-A7, two on Cortex-M4), so the
+// ramp is sampled rather than indexed directly.
 const BAND_TONES = ['band--fast', 'band--mid', 'band--slow', 'band--slowest'] as const;
 
-/**
- * The "why division leaks" number line: draws the udiv latency bands (0–255,
- * 256–2047, 2048–8191, 8192+) as colored segments with their cycle cost, and
- * drops a marker for a chosen dividend so a learner SEES the operand's magnitude
- * pick a cost. Bands are laid out on a log scale so every band is visible.
- *
- * `markerDividend` is the operand under the udiv instruction; `caption` names it.
- */
-function renderLatencyBands(markerDividend: number, caption: string): string {
-  const bands = getLatencyBands(state.platform);
-  // Log-scaled x layout so the narrow 0–255 band and the wide 8192+ band are
-  // both legible. Domain is magnitude+1 (avoid log 0); cap the top for display.
-  const displayCeil = 16384;
-  const logMin = 0; // log2(1)
-  const logMax = Math.log2(displayCeil);
-  const toX = (mag: number): number => {
-    const clamped = Math.max(1, Math.min(displayCeil, mag));
+function bandTone(index: number, count: number): string {
+  if (count <= 1) {
+    return BAND_TONES[0];
+  }
+  const position = Math.round((index / (count - 1)) * (BAND_TONES.length - 1));
+  return BAND_TONES[position] ?? BAND_TONES[BAND_TONES.length - 1];
+}
+
+/** Log-scaled x position within the active platform's display window. */
+function bandScaler(): (magnitude: number) => number {
+  const { min, max } = getPlatformProfile(state.platform).display;
+  const logMin = Math.log2(min);
+  const logMax = Math.log2(max);
+  return (magnitude: number): number => {
+    const clamped = Math.max(min, Math.min(max, Math.abs(magnitude) || min));
     return ((Math.log2(clamped) - logMin) / (logMax - logMin)) * 100;
   };
+}
 
-  const activeBand = latencyBandIndex(markerDividend, state.platform);
+/** Where the active platform's numbers come from, spelled out under the figure. */
+function renderModelProvenance(): string {
+  const profile = getPlatformProfile(state.platform);
+  return `<p class="bands-source"><span class="bands-source-label">Source</span> ${escapeHtml(profile.source)}. <span class="bands-source-label">Illustrative</span> ${escapeHtml(profile.illustrative)}.</p>`;
+}
+
+/**
+ * The "why division leaks" number line: draws the active target's real cost
+ * bands as colored segments with their cycle cost, and drops a marker for a
+ * chosen numerator so a learner SEES the numerator's magnitude pick a cost.
+ *
+ * The bands are the ones that actually fall inside the numerator range this
+ * line can produce (1,664–8,320), read straight off the platform profile — so
+ * on Cortex-A7 you get the paper's __divsi3 steps at 3,329 / 4,096 / 8,192, and
+ * on Cortex-M4 you get Table 4's single udiv crossover at 2,048. Bands are laid
+ * out on a log scale so the narrow ones stay legible.
+ *
+ * `markerDividend` is the numerator handed to the divider; `caption` names it.
+ */
+function renderLatencyBands(markerDividend: number, caption: string): string {
+  const bands = getDisplayBands(state.platform);
+  const profile = getPlatformProfile(state.platform);
+  const toX = bandScaler();
+  const activeBand = displayBandIndex(markerDividend, state.platform);
+  // On Cortex-M4 the profile carries Table 4's absolute measured cycle counts,
+  // so the absolute number is the honest headline and stands alone. On
+  // Cortex-A7 only the +20/+2/+1 steps are measured and they sit on an invented
+  // base, so there the DELTA leads and the absolute figure is explicitly marked
+  // as modelled. Same graphic, honest emphasis either way.
+  const measuredAbsolute = profile.cycleBasis === 'absolute';
+  const deltaLabel = (band: LatencyBand): string =>
+    band.delta === 0 ? 'base' : `base +${band.delta}`;
+  const bandFigures = (band: LatencyBand): string =>
+    measuredAbsolute
+      ? `${band.cycles} cyc`
+      : `${deltaLabel(band)} <em>${band.cycles} cyc modelled</em>`;
+  const markerFigure = (band: LatencyBand | undefined): string => {
+    if (!band) {
+      return '';
+    }
+    return measuredAbsolute ? `${band.cycles} cyc` : `${deltaLabel(band)} cyc`;
+  };
 
   const segments = bands
     .map((band: LatencyBand, index: number) => {
-      const start = toX(band.floor === 0 ? 1 : band.floor);
+      const start = toX(band.floor);
       const end = Number.isFinite(band.ceiling) ? toX(band.ceiling) : 100;
       const width = Math.max(0, end - start);
       const isActive = index === activeBand;
-      return `<div class="band-seg ${BAND_TONES[index] ?? 'band--slowest'}${isActive ? ' is-active' : ''}" style="left:${start.toFixed(2)}%;width:${width.toFixed(2)}%">
-          <span class="band-cycles">~${band.cycles} cyc</span>
-          <span class="band-range">${band.label}</span>
+      return `<div class="band-seg ${bandTone(index, bands.length)}${isActive ? ' is-active' : ''}" style="left:${start.toFixed(2)}%;width:${width.toFixed(2)}%">
+          <span class="band-cycles">${bandFigures(band)}</span>
+          <span class="band-range">${escapeHtml(band.label)}</span>
         </div>`;
     })
     .join('');
 
-  const markerX = toX(Math.abs(markerDividend));
-  const activeCycles = bands[activeBand]?.cycles ?? 0;
+  const markerX = toX(markerDividend);
+  const active = bands[activeBand];
+  const activeDescription = measuredAbsolute
+    ? `costing ${active?.cycles ?? 0} cycles`
+    : `costing ${active?.delta ?? 0} cycles more than the cheapest band`;
 
   return `
     <figure class="bands-figure">
       <figcaption class="bands-caption">${caption}</figcaption>
-      <div class="bands-track" role="img" aria-label="Number line of the division operand magnitude split into udiv latency bands; the current operand ${formatInteger(markerDividend)} lands in the ${bands[activeBand]?.label ?? ''} band costing about ${activeCycles} cycles">
+      <div class="bands-track" role="img" aria-label="Number line of the division numerator split into ${escapeHtml(profile.divisionOp)} cost bands on ${escapeHtml(profile.label)}; the current numerator ${formatInteger(markerDividend)} lands in the ${active?.label ?? ''} band, ${activeDescription}">
         ${segments}
+        ${renderUnreachableScrims()}
         <div class="band-marker" style="left:${markerX.toFixed(2)}%">
           <span class="band-marker-dot"></span>
-          <span class="band-marker-tag">dividend ${formatInteger(markerDividend)} → ~${activeCycles} cyc</span>
+          <span class="band-marker-tag">numerator ${formatInteger(markerDividend)} → ${markerFigure(active)}</span>
         </div>
       </div>
+      <p class="bands-reach-note">${reachNote()}</p>
+      ${renderModelProvenance()}
     </figure>`;
+}
+
+/**
+ * Scrims over the parts of the number line this line of code can never reach.
+ * The numerator is `2t + 1664` for a coefficient `t` in 0…3328, so it is always
+ * an even number in 1,664…8,320 — everything outside that is unreachable, and
+ * a cost step out there is not exploitable no matter how large it is. Drawn as
+ * shading rather than a bracket so it costs no vertical space in the track.
+ */
+function renderUnreachableScrims(): string {
+  const toX = bandScaler();
+  const start = toX(KYBERSLASH1_NUMERATOR_MIN);
+  const end = toX(KYBERSLASH1_NUMERATOR_MAX);
+  const left =
+    start > 0.5
+      ? `<div class="bands-scrim" style="left:0;width:${start.toFixed(2)}%" aria-hidden="true"></div>`
+      : '';
+  const right =
+    end < 99.5
+      ? `<div class="bands-scrim" style="left:${end.toFixed(2)}%;width:${(100 - end).toFixed(2)}%" aria-hidden="true"></div>`
+      : '';
+  return `${left}${right}`;
+}
+
+/** Caption suffix naming the reachable numerator window the scrims mark out. */
+function reachNote(): string {
+  return `Shaded ends are numerators <code>2&middot;w + 1664</code> can never produce — only ${formatInteger(KYBERSLASH1_NUMERATOR_MIN)}&ndash;${formatInteger(KYBERSLASH1_NUMERATOR_MAX)} is reachable, so only steps inside it are exploitable.`;
 }
 
 /**
  * The patched counterpart to {@link renderLatencyBands}: the same log-scaled
  * number line, but every band is greyed to one flat cost. The marker still sits
- * at the operand's magnitude to prove the point — its position no longer changes
- * the cost, because there is only one cost.
+ * at the numerator's magnitude to prove the point — its position no longer
+ * changes the cost, because there is only one cost.
  */
 function renderFlatCostBands(markerDividend: number): string {
-  const bands = getLatencyBands(state.platform);
-  const displayCeil = 16384;
-  const logMax = Math.log2(displayCeil);
-  const toX = (mag: number): number => {
-    const clamped = Math.max(1, Math.min(displayCeil, mag));
-    return (Math.log2(clamped) / logMax) * 100;
-  };
+  const bands = getDisplayBands(state.platform);
+  const toX = bandScaler();
+  const flat = patchedDivCycles(state.platform);
 
   const segments = bands
     .map((band: LatencyBand) => {
-      const start = toX(band.floor === 0 ? 1 : band.floor);
+      const start = toX(band.floor);
       const end = Number.isFinite(band.ceiling) ? toX(band.ceiling) : 100;
       const width = Math.max(0, end - start);
       return `<div class="band-seg band--flat" style="left:${start.toFixed(2)}%;width:${width.toFixed(2)}%">
-          <span class="band-cycles">~8 cyc</span>
-          <span class="band-range">${band.label}</span>
+          <span class="band-cycles">${flat} cyc</span>
+          <span class="band-range">${escapeHtml(band.label)}</span>
         </div>`;
     })
     .join('');
 
-  const markerX = toX(Math.abs(markerDividend));
+  const markerX = toX(markerDividend);
   return `
     <figure class="bands-figure">
-      <figcaption class="bands-caption">Patched path · one fixed cost across every operand (${escapeHtml(PLATFORM_LABELS[state.platform])})</figcaption>
-      <div class="bands-track bands-track--flat" role="img" aria-label="The same operand number line under Barrett reduction: every band costs a fixed 8 cycles, so the operand ${formatInteger(markerDividend)} no longer changes the timing">
+      <figcaption class="bands-caption">Patched path · one fixed cost across every numerator (${escapeHtml(PLATFORM_LABELS[state.platform])})</figcaption>
+      <div class="bands-track bands-track--flat" role="img" aria-label="The same numerator number line under Barrett reduction: every band costs the same fixed number of cycles, so the numerator ${formatInteger(markerDividend)} no longer changes the timing">
         ${segments}
+        ${renderUnreachableScrims()}
         <div class="band-marker band-marker--flat" style="left:${markerX.toFixed(2)}%">
           <span class="band-marker-dot"></span>
-          <span class="band-marker-tag">dividend ${formatInteger(markerDividend)} → ~8 cyc (fixed)</span>
+          <span class="band-marker-tag">numerator ${formatInteger(markerDividend)} → ${flat} cyc (fixed)</span>
         </div>
       </div>
+      <p class="bands-source"><span class="bands-source-label">Illustrative</span> the paper does not benchmark the patched routine, so the exact constant here is invented. What is <em>not</em> invented is that it is a single number the operand cannot move — multiply and shift are fixed-latency instructions on both targets.</p>
     </figure>`;
 }
 
 /**
- * The teaching panel that makes the leak mechanism visible: explains that udiv
- * time is a STEP FUNCTION of operand magnitude, then shows the current
- * vulnerable coefficient landing in a band vs. the patched path pinned flat.
+ * The mechanism panel. What actually performs the division is target-specific,
+ * and the whole point of KyberSlash is that you cannot reason about it without
+ * naming the target:
+ *
+ *   Raspberry Pi 2 / Cortex-A7 — gcc -Os builds for an ABI that does not
+ *     guarantee a divide instruction, so no `udiv` executes; the division is a
+ *     call to the `__divsi3` SOFTWARE routine, whose cost steps up at
+ *     numerators 3,329 / 4,096 / 8,192 (paper §5.1.1).
+ *   STM32F407VG / Cortex-M4 — a hardware `udiv` does execute, and its own
+ *     latency is a step function of the numerator (paper Table 4).
+ *
+ * So this panel reads the mechanism off the active platform profile rather than
+ * asserting one of them universally.
  */
 function renderWhyDivisionLeaks(): string {
-  // A representative in-range coefficient's dividend for the marker. Uses the
-  // same 2*w + q/2 form the real poly_tomsg divides on (w near the boundary so
-  // the marker sits where the attack actually probes).
-  const sampleW = 192;
-  const vulnerableDividend = 2 * sampleW + Math.floor(KYBER_PARAMS.q / 2);
+  const profile = getPlatformProfile(state.platform);
+  const isSoftwareDivision = profile.divisionOp === '__divsi3';
+  // Put the marker where the attack actually probes: the dividend of the high
+  // probe, i.e. the first coefficient that lands on the target's biggest step.
+  const [, highProbe] = activeProbes();
+  const vulnerableDividend = kyberSlash1Dividend(highProbe);
+
+  const lead = isSoftwareDivision
+    ? `No divide instruction runs here at all. On the paper&rsquo;s Raspberry Pi 2 the reference C is built with <code>gcc -Os</code> for an ABI that does not guarantee a hardware divide, so <code>(2&middot;w + 1664) / 3329</code> becomes a call to ${glossTerm('__divsi3', 'the compiler\u2019s software integer-division routine, linked in when the target ABI does not guarantee a divide instruction')} — a software division routine. Its cost climbs in <strong>discrete jumps as the numerator grows</strong>. Because <code>w</code> is the decrypted coefficient, and the decrypted coefficient carries the secret, the clock moves with the secret.`
+    : `The Cortex-M4 does have a hardware divide instruction (${glossTerm('udiv', 'the CPU\u2019s hardware integer-divide instruction, whose latency depends on the numerator')}) — and it does not take a fixed number of cycles. The paper reverse-engineers its latency as a <strong>step function of the numerator</strong>, 2 to 12 cycles. Because the numerator <code>2&middot;w + 1664</code> carries the secret-derived coefficient <code>w</code>, the clock moves with the secret.`;
+
+  const steps = coefficientSteps(state.platform);
+  const stepList = steps
+    .map(
+      (step) =>
+        `<li><code>numerator &ge; ${formatInteger(step.numerator)}</code> <span class="why-leak-step-arrow">&rarr;</span> <strong>+${step.jump} cycle${step.jump === 1 ? '' : 's'}</strong> <span class="why-leak-step-coeff">(coefficient <code>t &ge; ${formatInteger(step.coefficient)}</code>)</span></li>`,
+    )
+    .join('');
 
   return `
     <section class="why-leak" aria-label="Why division time leaks the secret">
       <header class="why-leak-head">
-        <span class="why-leak-eyebrow">Mechanism</span>
+        <span class="why-leak-eyebrow">Mechanism · ${escapeHtml(profile.device)}</span>
         <h3>Why the division time leaks</h3>
-        <p class="why-leak-lead">The CPU's hardware divide instruction (${glossTerm('udiv', 'the CPU&rsquo;s hardware integer-divide instruction')}) does not take a fixed number of cycles. Its latency is a <strong>step function of the operand&rsquo;s magnitude</strong>: bigger dividend, more cycles. Because the dividend <code>2&middot;w + q/2</code> depends on the secret-derived value <code>w</code>, the clock itself moves with the secret.</p>
+        <p class="why-leak-lead">${lead}</p>
       </header>
-      ${renderLatencyBands(vulnerableDividend, `Vulnerable path · the operand&rsquo;s magnitude picks the cost (${escapeHtml(PLATFORM_LABELS[state.platform])})`)}
-      <p class="why-leak-flat-note">${glossTerm('Barrett reduction', 'computing floor(x/q) with a fixed-cost multiply and shift instead of a data-dependent divide')} (the patch) replaces that divide with a multiply and a shift — instructions whose latency does <em>not</em> depend on the data — so every coefficient costs the same fixed <strong>~8 cycles</strong> and the marker never moves. That flat line is what the fix in Exhibit&nbsp;1 buys you.</p>
+      <div class="why-leak-steps">
+        <p class="why-leak-steps-label">Measured cost steps reachable from this line (${escapeHtml(profile.divisionOp)} on ${escapeHtml(profile.device)})</p>
+        <ul>${stepList}</ul>
+        <p class="why-leak-steps-note">Switch target and those steps move: they are a property of the compiler output and the CPU, not of Kyber. That is exactly why side-channel safety has to be audited per platform, not per algorithm.</p>
+      </div>
+      ${renderLatencyBands(vulnerableDividend, `Vulnerable path · the numerator&rsquo;s magnitude picks the cost (${escapeHtml(PLATFORM_LABELS[state.platform])})`)}
+      <p class="why-leak-flat-note">${glossTerm('Barrett reduction', 'computing floor(x/q) with a fixed-cost multiply and shift instead of a data-dependent divide')} (the patch) replaces that division with a multiply and a shift — instructions whose latency does <em>not</em> depend on the data — so every coefficient costs the same fixed amount and the marker never moves. That flat line is what the fix in Exhibit&nbsp;1 buys you.</p>
     </section>`;
 }
 
@@ -1188,7 +1302,7 @@ function renderOscilloscope(): string {
         <article class="trace-card trace-card--danger">
           <header>
             <p>VULNERABLE IMPLEMENTATION</p>
-            <strong>Cortex-A7 simulated leakage</strong>
+            <strong>${escapeHtml(PLATFORM_LABELS[state.platform])} simulated leakage</strong>
           </header>
           ${createPolyline(state.vulnerableSamples, 'danger')}
           <ul class="trace-list">${latestMeasurements(state.vulnerableSamples)}</ul>
@@ -1220,16 +1334,30 @@ function renderOscilloscope(): string {
 }
 
 /**
- * Slow-motion walkthrough of the two-probe attack for ONE coefficient. Shows the
- * chosen ciphertext offsets t=191 / t=192, the device adding the hidden secret,
- * each dividend landing below or above the ~2048 latency boundary, the fast/slow
- * readout, and the truth table filling in to reveal the coefficient. All numbers
- * come from walkthroughCoefficient() — the same model the live attack uses.
+ * Slow-motion walkthrough of the two-probe attack for ONE coefficient. The two
+ * probes straddle whatever cost step the ACTIVE target actually has — coefficient
+ * 833 on the paper's Cortex-A7 (numerator 3,329, the +20-cycle `__divsi3` jump,
+ * §5.1.1-§5.1.2), coefficient 192 on Cortex-M4 (numerator 2,048 = 2^11, the
+ * +2-cycle `udiv` crossover, Table 4). The device adds the hidden secret, each
+ * numerator lands below or above the step, and the fast/slow truth table reveals
+ * the coefficient. All numbers come from walkthroughCoefficient() — the same
+ * model the live attack uses.
  */
 function renderProbeWalkthrough(): string {
   const secret = state.walkthroughSecret;
   const w = walkthroughCoefficient(secret);
   const signLabel = (s: number): string => (s > 0 ? '+1' : s < 0 ? '−1' : '0');
+  const boundary = w.boundaryNumerator;
+  const divisionOp = escapeHtml(w.divisionOp);
+  // Only Cortex-M4 has absolute measured cycle counts (Table 4). On Cortex-A7
+  // the paper gives the +20-cycle jump but not divsi3's base cost, so a probe
+  // card there reports which side of the step it landed on rather than
+  // parading a cycle count the paper never published.
+  const measuredAbsolute = getPlatformProfile(state.platform).cycleBasis === 'absolute';
+  const costPhrase = (step: { cycles: number; slow: boolean }): string =>
+    measuredAbsolute
+      ? `<strong>${formatDecimal(step.cycles, 0)} cycles</strong>`
+      : `<strong>${step.slow ? `+${w.jumpCycles} cycles` : 'baseline'}</strong>`;
 
   const probeCard = (
     step: { probe: number; w: number; dividend: number; cycles: number; slow: boolean },
@@ -1237,13 +1365,13 @@ function renderProbeWalkthrough(): string {
   ): string => `
     <article class="probe-card ${step.slow ? 'is-slow' : 'is-fast'}">
       <header class="probe-card-head">
-        <span class="probe-chip">probe t=${step.probe}</span>
+        <span class="probe-chip">probe t=${formatInteger(step.probe)}</span>
         <span class="probe-verdict ${step.slow ? 'is-slow' : 'is-fast'}">${step.slow ? 'SLOW' : 'FAST'}</span>
       </header>
-      <p class="probe-math">device adds secret: <code>w = ${signLabel(secret)} + ${step.probe} = ${step.w}</code></p>
-      <p class="probe-math">dividend fed to udiv: <code>2&middot;${step.w} + q/2 = ${formatInteger(step.dividend)}</code></p>
-      ${renderBoundaryLine(step.dividend, step.slow)}
-      <p class="probe-readout">udiv latency <strong>~${formatDecimal(step.cycles, 0)} cycles</strong> — ${note}</p>
+      <p class="probe-math">device adds secret: <code>w = ${signLabel(secret)} + ${formatInteger(step.probe)} = ${formatInteger(step.w)}</code></p>
+      <p class="probe-math">numerator handed to <code>${divisionOp}</code>: <code>2&middot;${formatInteger(step.w)} + 1664 = ${formatInteger(step.dividend)}</code></p>
+      ${renderBoundaryLine(step.dividend, step.slow, boundary)}
+      <p class="probe-readout"><code>${divisionOp}</code> cost ${costPhrase(step)} — ${note}</p>
     </article>`;
 
   const rows = ([-1, 0, 1] as const)
@@ -1264,7 +1392,7 @@ function renderProbeWalkthrough(): string {
       <header class="walkthrough-head">
         <span class="walkthrough-eyebrow">Slow motion · one coefficient</span>
         <h3>How two probes read one secret coefficient</h3>
-        <p class="walkthrough-lead">The attacker cannot see the secret <code>s &isin; {&minus;1, 0, +1}</code>. It sends two crafted ciphertexts whose offsets straddle the latency boundary, and lets the timing decide. Pick a hidden secret and watch the inference — the grid below is just this trick run 768 times.</p>
+        <p class="walkthrough-lead">The attacker cannot see the secret <code>s &isin; {&minus;1, 0, +1}</code>. It sends two crafted ciphertexts whose offsets straddle this target&rsquo;s division-cost step — the <strong>+${w.jumpCycles}-cycle</strong> jump at numerator <strong>${formatInteger(w.boundaryNumerator)}</strong>, i.e. at coefficient <strong>${formatInteger(w.boundaryCoefficient)}</strong> — and lets the timing decide. Pick a hidden secret and watch the inference; the grid below is just this trick run 768 times.</p>
       </header>
       <div class="walkthrough-picker" role="group" aria-label="Choose the hidden secret coefficient to trace">
         <span class="walkthrough-picker-label">Hidden secret s =</span>
@@ -1276,38 +1404,44 @@ function renderProbeWalkthrough(): string {
           .join('')}
       </div>
       <div class="probe-pair">
-        ${probeCard(w.low, `t=${PROBE_LOW} only crosses the boundary when s = +1`)}
-        ${probeCard(w.high, `t=${PROBE_HIGH} crosses when s is 0 or +1`)}
+        ${probeCard(w.low, `t=${formatInteger(w.low.probe)} only reaches the step when s = +1`)}
+        ${probeCard(w.high, `t=${formatInteger(w.high.probe)} reaches it when s is 0 or +1`)}
       </div>
       <div class="truth-panel">
         <table class="truth-table">
           <caption class="sr-only">Truth table mapping each secret value to its fast/slow timing pair</caption>
           <thead>
-            <tr><th scope="col">secret</th><th scope="col">t=191</th><th scope="col">t=192</th><th scope="col"></th></tr>
+            <tr><th scope="col">secret</th><th scope="col">t=${formatInteger(w.low.probe)}</th><th scope="col">t=${formatInteger(w.high.probe)}</th><th scope="col"></th></tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
         <p class="truth-result" role="status">Timing pair <strong>(${w.low.slow ? 'slow' : 'fast'}, ${w.high.slow ? 'slow' : 'fast'})</strong> is unique to <strong>s = ${signLabel(w.inferred)}</strong> — the coefficient is recovered without ever reading the key.</p>
       </div>
+      <p class="walkthrough-note">Simplification worth naming: the paper&rsquo;s own Raspberry Pi 2 demo does not use adjacent probes. It <em>scales</em> the secret coefficient by an attacker-chosen multiplier <code>û</code> (§5.1.2 works through <code>û = 72</code>, then notes that &minus;72 and 107 pick out the other values) so a single secret value swings the numerator clean across that target&rsquo;s 3,329 step, and a handful of <code>û</code> values separate Kyber512&rsquo;s full &minus;3&hellip;+3 range. This lab uses <code>û = 1</code> and two adjacent probes instead — the same mechanism with the bookkeeping stripped out, which is why the secret here is a reduced three-value toy rather than a conformant ML-KEM key.</p>
+      ${renderModelProvenance()}
     </section>`;
 }
 
 /**
- * A compact one-dimensional band line for the walkthrough: shows the ~2048
- * boundary and where a single dividend lands relative to it (fast/slow side).
+ * A compact one-dimensional band line for the walkthrough: shows this target's
+ * cost step and where a single numerator lands relative to it (fast/slow side).
+ * The step is passed in rather than hardcoded, because it moves with the target
+ * — numerator 3,329 on Cortex-A7, 2,048 on Cortex-M4.
  */
-function renderBoundaryLine(dividend: number, slow: boolean): string {
-  // Zoom on 2020..2075 so the 2048 boundary and the 2044/2046/2048/2050
-  // dividends are visibly distinct. Clamp for display.
-  const lo = 2020;
-  const hi = 2075;
+function renderBoundaryLine(dividend: number, slow: boolean, boundary: number): string {
+  // Zoom tightly around the step. The four numerators the walkthrough can show
+  // are boundary-3, boundary-1, boundary+1 and boundary+3 (the dividend is
+  // always even and the probes are adjacent), so +/-6 keeps them distinct.
+  const halfWindow = 6;
+  const lo = boundary - halfWindow;
+  const hi = boundary + halfWindow;
   const pos = Math.max(0, Math.min(100, ((dividend - lo) / (hi - lo)) * 100));
-  const boundaryPos = ((2048 - lo) / (hi - lo)) * 100;
+  const boundaryPos = ((boundary - lo) / (hi - lo)) * 100;
   return `
-    <div class="boundary-line" role="img" aria-label="Dividend ${formatInteger(dividend)} lands on the ${slow ? 'slow' : 'fast'} side of the 2048 latency boundary">
+    <div class="boundary-line" role="img" aria-label="Numerator ${formatInteger(dividend)} lands on the ${slow ? 'slow' : 'fast'} side of the ${formatInteger(boundary)} cost step">
       <span class="boundary-band boundary-band--fast" style="width:${boundaryPos.toFixed(2)}%"></span>
       <span class="boundary-band boundary-band--slow" style="left:${boundaryPos.toFixed(2)}%;width:${(100 - boundaryPos).toFixed(2)}%"></span>
-      <span class="boundary-tick" style="left:${boundaryPos.toFixed(2)}%"><span class="boundary-tick-label">2048</span></span>
+      <span class="boundary-tick" style="left:${boundaryPos.toFixed(2)}%"><span class="boundary-tick-label">${formatInteger(boundary)}</span></span>
       <span class="boundary-dot ${slow ? 'is-slow' : 'is-fast'}" style="left:${pos.toFixed(2)}%"></span>
     </div>`;
 }
@@ -1474,8 +1608,8 @@ function renderAttack(): string {
         <div>
           <p class="mini-label">Attack variant</p>
           <strong>KyberSlash1 (poly_tomsg), modeled against ML-KEM-768</strong>
-          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. The attacker submits crafted ciphertexts, measures the modelled ${glossTerm('poly_tomsg', 'the decryption step that turns a polynomial back into the message bits')} division latency, and infers each secret coefficient from which ${glossTerm('udiv', 'the CPU&rsquo;s hardware integer-divide instruction')} bucket boundary the timing crosses — the secret is never read directly, it emerges statistically from the noisy cycle counts.</p>
-          <p class="attack-fieldnote">Field result: in the original work a real Kyber512 key fell on a Raspberry Pi 2 (Cortex-A7) within 2–4 hours across 10 of 10 trials.</p>
+          <p class="attack-subtitle">This browser demo uses a deterministic timing model rather than real JavaScript timing. The attacker submits crafted ciphertexts, measures the modelled ${glossTerm('poly_tomsg', 'the decryption step that turns a polynomial back into the message bits')} division cost, and infers each secret coefficient from which side of <code>${escapeHtml(getPlatformProfile(state.platform).divisionOp)}</code>&rsquo;s cost step the timing lands on — the secret is never read directly, it emerges statistically from the noisy cycle counts.</p>
+          <p class="attack-fieldnote">Field result: in the original work a real Kyber512 key fell on a Raspberry Pi 2 (Cortex-A7) within 2–4 hours in 10 of 10 experiments, with the demo budgeted to give up after 7&middot;2<sup>18</sup> = 1,835,008 decapsulations (KyberSlash, TCHES 2025(2), Table 1 and §5.2).</p>
         </div>
         <div class="attack-mode-toggle">
           <button type="button" class="chip ${state.attackMode === 'vulnerable' ? 'is-active' : ''}" data-action="mode-vulnerable" aria-pressed="${state.attackMode === 'vulnerable'}">Vulnerable path</button>

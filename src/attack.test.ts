@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  activeProbes,
   createAttackState,
   getRecoveredCoeff,
   oracleQueryTime,
@@ -10,7 +11,7 @@ import {
   walkthroughCoefficient,
   type SecretKey,
 } from './attack';
-import { setActivePlatform } from './timing-model';
+import { primaryCoefficientStep, setActivePlatform, type Platform } from './timing-model';
 
 function collapse(value: number): -1 | 0 | 1 {
   return value > 0 ? 1 : value < 0 ? -1 : 0;
@@ -34,35 +35,50 @@ function meanOf(fn: () => number, n: number): number {
   return sum / n;
 }
 
-const PROBE_LOW = 191;
-const PROBE_HIGH = 192;
+/**
+ * The decision threshold sits midway between the two cost levels either side of
+ * the active target's step. Derived, never hardcoded, because the step is
+ * target-specific: coefficient 833 / +20 cycles on Cortex-A7 (the `divsi3`
+ * jump, paper §5.1.1-§5.1.2), coefficient 192 / +2 cycles on Cortex-M4 (the
+ * `udiv` crossover at 2^11, paper Table 4).
+ */
+function thresholdFor(platform: Platform): number {
+  const step = primaryCoefficientStep(platform);
+  return (step.fromCycles + step.toCycles) / 2;
+}
 
-describe('oracleQueryTime is a real boundary-crossing leak', () => {
-  it('produces the (fast/slow) signature per secret value on the vulnerable path', () => {
-    setActivePlatform('cortex-a7');
-    // Decision threshold ~17.5 cycles between the two udiv levels (15 vs 20).
-    const threshold = 17.5;
-    const N = 400;
+describe('oracleQueryTime is a real step-crossing leak', () => {
+  it.each(['cortex-a7', 'cortex-m4'] as const)(
+    'produces the (fast/slow) signature per secret value on the vulnerable path (%s)',
+    (platform) => {
+      setActivePlatform(platform);
+      const threshold = thresholdFor(platform);
+      const [low, high] = activeProbes();
+      const N = 400;
 
-    // s = -1: neither boundary crossed -> both probes fast.
-    expect(meanOf(() => oracleQueryTime(-1, PROBE_LOW, true), N)).toBeLessThan(threshold);
-    expect(meanOf(() => oracleQueryTime(-1, PROBE_HIGH, true), N)).toBeLessThan(threshold);
+      // s = -1: neither probe reaches the step -> both fast.
+      expect(meanOf(() => oracleQueryTime(-1, low, true), N)).toBeLessThan(threshold);
+      expect(meanOf(() => oracleQueryTime(-1, high, true), N)).toBeLessThan(threshold);
 
-    // s = 0: only the t=192 boundary crossed -> low fast, high slow.
-    expect(meanOf(() => oracleQueryTime(0, PROBE_LOW, true), N)).toBeLessThan(threshold);
-    expect(meanOf(() => oracleQueryTime(0, PROBE_HIGH, true), N)).toBeGreaterThan(threshold);
+      // s = 0: only the high probe reaches it -> low fast, high slow.
+      expect(meanOf(() => oracleQueryTime(0, low, true), N)).toBeLessThan(threshold);
+      expect(meanOf(() => oracleQueryTime(0, high, true), N)).toBeGreaterThan(threshold);
 
-    // s = +1: both boundaries crossed -> both probes slow.
-    expect(meanOf(() => oracleQueryTime(1, PROBE_LOW, true), N)).toBeGreaterThan(threshold);
-    expect(meanOf(() => oracleQueryTime(1, PROBE_HIGH, true), N)).toBeGreaterThan(threshold);
-  });
+      // s = +1: both probes reach it -> both slow.
+      expect(meanOf(() => oracleQueryTime(1, low, true), N)).toBeGreaterThan(threshold);
+      expect(meanOf(() => oracleQueryTime(1, high, true), N)).toBeGreaterThan(threshold);
+
+      setActivePlatform('cortex-a7');
+    },
+  );
 
   it('carries NO secret-dependent signal on the patched path', () => {
     setActivePlatform('cortex-a7');
+    const [low, high] = activeProbes();
     const N = 2000;
-    const a = meanOf(() => oracleQueryTime(-1, PROBE_LOW, false), N);
-    const b = meanOf(() => oracleQueryTime(0, PROBE_HIGH, false), N);
-    const c = meanOf(() => oracleQueryTime(1, PROBE_LOW, false), N);
+    const a = meanOf(() => oracleQueryTime(-1, low, false), N);
+    const b = meanOf(() => oracleQueryTime(0, high, false), N);
+    const c = meanOf(() => oracleQueryTime(1, low, false), N);
     // All secret values collapse to the same constant-time cost (within jitter).
     expect(Math.abs(a - b)).toBeLessThan(0.3);
     expect(Math.abs(b - c)).toBeLessThan(0.3);
@@ -86,13 +102,31 @@ describe('single-coefficient walkthrough matches the live attack model', () => {
     expect(zero.inferred).toBe(0);
     expect(plus.inferred).toBe(1);
 
-    // Dividends are the honest 2*w + q/2 straddling the 2048 boundary.
-    expect(zero.low.dividend).toBe(2046);
-    expect(zero.high.dividend).toBe(2048);
+    // The step it straddles is the paper's: numerator 3329, coefficient 833,
+    // +20 cycles, and no `udiv` involved because gcc -Os calls `divsi3`.
+    expect(zero.boundaryNumerator).toBe(3329);
+    expect(zero.boundaryCoefficient).toBe(833);
+    expect(zero.jumpCycles).toBe(20);
+    expect(zero.divisionOp).toBe('__divsi3');
+
+    // Probes are 832 / 833, and their honest 2*w + 1664 numerators straddle 3329.
+    expect([zero.low.probe, zero.high.probe]).toEqual([832, 833]);
+    expect(zero.low.dividend).toBe(3328);
+    expect(zero.high.dividend).toBe(3330);
   });
 
-  it('still infers correctly on the narrower-signal cortex-m4', () => {
+  it('straddles the Table 4 udiv crossover instead when the target is cortex-m4', () => {
     setActivePlatform('cortex-m4');
+    const zero = walkthroughCoefficient(0);
+
+    expect(zero.boundaryNumerator).toBe(2048);
+    expect(zero.boundaryCoefficient).toBe(192);
+    expect(zero.jumpCycles).toBe(2);
+    expect(zero.divisionOp).toBe('udiv');
+    expect([zero.low.probe, zero.high.probe]).toEqual([191, 192]);
+    expect(zero.low.dividend).toBe(2046);
+    expect(zero.high.dividend).toBe(2048);
+
     for (const s of [-1, 0, 1] as const) {
       expect(walkthroughCoefficient(s).inferred).toBe(s);
     }

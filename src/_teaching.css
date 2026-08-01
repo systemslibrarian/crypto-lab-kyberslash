@@ -1,7 +1,7 @@
 
 /* ============================================================================
    Teaching improvements (pedagogy pass): glossary, parameter disclosure,
-   udiv latency-band number line, Barrett intuition, two-probe walkthrough.
+   division-cost band number line, Barrett intuition, two-probe walkthrough.
    Labels always use --text (AA on panel bg in both themes); band tone is
    carried by translucent fills + borders + explicit numbers, never color alone.
    ============================================================================ */
@@ -61,7 +61,10 @@
   font-size: 0.92rem;
 }
 
-/* Shared: udiv latency-band number line */
+/* Shared: division-cost band number line. What performs the division is
+   target-specific (a hardware `udiv` on Cortex-M4, a call to the `__divsi3`
+   software routine on the paper's Cortex-A7 build), so nothing here names an
+   instruction — the markup supplies it. */
 .bands-figure {
   margin: 14px 0 4px;
 }
@@ -69,6 +72,33 @@
   color: var(--muted);
   font-size: 0.86rem;
   margin-bottom: 10px;
+}
+/* Provenance and reachability notes rendered under each band figure. Both are
+   deliberately plain text so a screenshot carries its own sourcing. */
+.bands-source,
+.bands-reach-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  max-width: 88ch;
+}
+.bands-source-label {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text);
+}
+.bands-source em { color: var(--text); font-style: italic; }
+.bands-reach-note code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
 }
 .bands-track {
   position: relative;
@@ -100,6 +130,36 @@
   font-weight: 700;
   font-size: 0.82rem;
   color: var(--text);
+}
+/* The "+20" / "base" delta beside each band's absolute cycle count. On
+   Cortex-A7 the deltas are the paper's measurements and the absolute numbers
+   sit on an illustrative base, so the delta is the load-bearing figure. */
+.band-cycles em {
+  font-style: normal;
+  font-weight: 400;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+/* Numerators this code path can never produce. Shaded, not hidden, so the
+   unreachable steps stay visible as unreachable. */
+.bands-scrim {
+  position: absolute;
+  top: 0;
+  bottom: 22px;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(10, 20, 24, 0.42) 0 5px,
+    rgba(10, 20, 24, 0.18) 5px 10px
+  );
+  z-index: 1;
+  pointer-events: none;
+}
+:root[data-theme='light'] .bands-scrim {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(240, 245, 248, 0.72) 0 5px,
+    rgba(240, 245, 248, 0.42) 5px 10px
+  );
 }
 .band-range {
   font-size: 0.68rem;
@@ -199,11 +259,66 @@
   margin: 0;
 }
 .why-leak-flat-note,
-.barrett-flatline {
+.barrett-flatline,
+.walkthrough-note {
   margin: 12px 0 0;
   color: var(--muted);
   font-size: 0.94rem;
   max-width: 72ch;
+}
+.walkthrough-note code {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+/* The measured cost steps for the active target, listed as
+   numerator -> cycle jump -> the coefficient that reaches it. */
+.why-leak-steps {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.12);
+}
+:root[data-theme='light'] .why-leak-steps {
+  background: rgba(4, 27, 36, 0.04);
+}
+.why-leak-steps-label {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+.why-leak-steps ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.why-leak-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.why-leak-steps code {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+.why-leak-step-arrow { color: var(--muted); }
+.why-leak-step-coeff { color: var(--muted); font-size: 0.84rem; }
+.why-leak-steps-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  max-width: 76ch;
 }
 
 /* Barrett intuition compare */
@@ -240,6 +355,8 @@
 :root[data-theme='light'] .barrett-instr .hot { color: #c81e46; }
 :root[data-theme='light'] .barrett-instr .cool { color: #0a6f95; }
 .barrett-note { margin: 10px 0 0; color: var(--muted); font-size: 0.9rem; }
+.barrett-note code,
+.barrett-lead code { font-family: var(--font-mono); color: var(--text); }
 .barrett-tag {
   display: inline-block;
   font-family: var(--font-mono);
@@ -318,9 +435,11 @@
   color: var(--text);
 }
 .probe-math code,
+.probe-readout code,
 .probe-readout strong {
   font-family: var(--font-mono);
 }
+.probe-readout code { color: var(--text); font-size: 0.85rem; }
 .probe-readout { margin: 8px 0 0; color: var(--muted); font-size: 0.9rem; }
 
 /* Compact boundary line inside each probe card */

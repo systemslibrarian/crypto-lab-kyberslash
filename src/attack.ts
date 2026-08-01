@@ -1,4 +1,10 @@
-import { simulatedDivCycles } from './timing-model';
+import {
+  getPlatformProfile,
+  kyberSlash1Dividend,
+  primaryCoefficientStep,
+  probeOffsets,
+  simulatedDivCycles,
+} from './timing-model';
 
 /**
  * KyberSlash1 key-recovery oracle.
@@ -15,46 +21,69 @@ import { simulatedDivCycles } from './timing-model';
  *
  *     bit = ((2*w + q/2) / q) & 1        // q = 3329, division on a secret operand
  *
- * where `w = decompress(ciphertext) + secret` is the decrypted coefficient.
- * The udiv latency depends on the magnitude of the dividend `2*w + q/2`
- * (see timing-model.ts). Real CPUs cross a latency bucket boundary around
- * dividend = 2048, i.e. around `w = 192`.
+ * where `w = decompress(ciphertext) + secret` is the decrypted coefficient, so
+ * the divider sees the dividend `2*w + 1664`. Its cost is a step function of
+ * that dividend (see timing-model.ts), and the steps are target-specific:
  *
- * The attacker chooses a ciphertext whose decompressed contribution places `w`
- * one step *below* that boundary. Then the secret coefficient s in {-1,0,+1},
- * added by the device, decides whether `w` crosses the boundary:
+ *   Cortex-A7 / Raspberry Pi 2 (paper §5.1.1, §5.1.2): gcc -Os emits a call to
+ *     the `__divsi3` SOFTWARE routine — no `udiv` runs at all — and its cost
+ *     jumps by 20 cycles at numerator 3329, by 2 more at 4096 and 1 more at
+ *     8192, i.e. at coefficients w = 833, 1216 and 3264.
+ *   Cortex-M4 / STM32F407VG (paper Table 4): the hardware `udiv` instruction
+ *     steps at numerator 2^11 = 2048, i.e. at coefficient w = 192. That is the
+ *     only Table 4 crossover inside KyberSlash1's 1664…8320 numerator range.
  *
- *     probe t=191:  w = s + 191  -> crosses 192 only when s = +1
- *     probe t=192:  w = s + 192  -> crosses 192 when s in {0, +1}
+ * The attack straddles whichever step is biggest on the active target. Writing
+ * T for that step's coefficient (833 on A7, 192 on M4), the attacker sends two
+ * crafted ciphertexts whose decompressed contribution places `w` at T-1 and T.
+ * The secret coefficient s in {-1,0,+1}, added by the device, then decides
+ * which of them crosses:
+ *
+ *     probe t = T-1:  w = s + T - 1  -> crosses only when s = +1
+ *     probe t = T:    w = s + T      -> crosses when s in {0, +1}
  *
  * So each secret value yields a distinct pair of (fast / slow) outcomes:
  *
- *     s = -1 : (t191 fast, t192 fast)
- *     s =  0 : (t191 fast, t192 slow)
- *     s = +1 : (t191 slow, t192 slow)
+ *     s = -1 : (low fast, high fast)
+ *     s =  0 : (low fast, high slow)
+ *     s = +1 : (low slow, high slow)
  *
  * The attacker averages many noisy measurements per probe, compares each mean
  * against a decision threshold it derives purely from the *public* platform
- * timing model (the udiv latency table from the paper), and reconstructs the
- * secret from which boundaries were crossed. The secret is never indexed.
+ * timing model (the paper's step measurements), and reconstructs the secret
+ * from which boundaries were crossed. The secret is never indexed.
+ *
+ * Simplification worth naming: the paper's Pi 2 demo scales the secret by an
+ * attacker-chosen coefficient û (e.g. 72), so a single secret value swings the
+ * dividend right across the 3329 boundary and a handful of û values separate
+ * all of Kyber512's -3…+3 range. This lab uses û = 1 and probes adjacent to the
+ * step instead — the same mechanism with the arithmetic minimised, at the cost
+ * of only resolving three secret values (see `generateSecretKey`).
  */
 
 const KYBER_Q = 3329;
 
-/** Two attacker-chosen ciphertext offsets straddling the udiv bucket boundary. */
-export const PROBE_LOW = 191; // crossed only by s = +1
-export const PROBE_HIGH = 192; // crossed by s in {0, +1}
-const PROBES = [PROBE_LOW, PROBE_HIGH] as const;
-
 const MIN_SAMPLES_PER_PROBE = 12;
 
 /**
- * Reference dividends immediately below / at the 2048 udiv bucket boundary.
- * The attacker knows these from the platform's public timing characteristics,
- * not from the secret. `2*191 + q/2 = 2046` (below), `2*192 + q/2 = 2048` (at).
+ * The two attacker-chosen ciphertext offsets that straddle the active target's
+ * biggest in-range cost step. Platform-derived, so switching targets moves the
+ * probes to that target's real threshold rather than a hardcoded one.
  */
-const BOUNDARY_DIVIDEND_BELOW = 2 * 191 + Math.floor(KYBER_Q / 2); // 2046
-const BOUNDARY_DIVIDEND_ABOVE = 2 * 192 + Math.floor(KYBER_Q / 2); // 2048
+export function activeProbes(): readonly [low: number, high: number] {
+  const { low, high } = probeOffsets();
+  return [low, high];
+}
+
+/**
+ * Reference dividends immediately below / at the active target's step. The
+ * attacker knows these from the platform's public timing characteristics, not
+ * from the secret.
+ */
+function boundaryDividends(): { below: number; above: number } {
+  const [low, high] = activeProbes();
+  return { below: kyberSlash1Dividend(low), above: kyberSlash1Dividend(high) };
+}
 
 interface AttackMetadata {
   recovered: Int16Array;
@@ -65,7 +94,7 @@ interface AttackMetadata {
 const stateMetadata = new WeakMap<AttackState, AttackMetadata>();
 
 function createProbeBuckets(): Map<number, number[]> {
-  return new Map(PROBES.map((probe) => [probe, []]));
+  return new Map(activeProbes().map((probe) => [probe, [] as number[]]));
 }
 
 function initializeAttackState(state: AttackState): AttackState {
@@ -115,47 +144,53 @@ export function oracleQueryTime(
   vulnerableImplementation: boolean,
 ): number {
   if (!vulnerableImplementation) {
-    // Barrett reduction is constant-time: the cost is fixed regardless of the
-    // secret operand or the attacker's probe, so both probes return the same
-    // level (the boundary midpoint) plus ordinary measurement jitter. There is
-    // no boundary to cross, hence no signal for the attacker.
-    return simulatedDivCycles(BOUNDARY_DIVIDEND_ABOVE, KYBER_Q, true) / 2 +
-      simulatedDivCycles(BOUNDARY_DIVIDEND_BELOW, KYBER_Q, true) / 2;
+    // Barrett reduction is constant-time: the cost is one fixed number no
+    // matter what the secret or the probe is, so no step is ever crossed and
+    // the attacker learns nothing. Modelled here as the decision midpoint plus
+    // jitter, which makes "learns nothing" literal — the threshold test lands
+    // on a coin flip. On a real patched device the constant would sit somewhere
+    // definite and the same test would simply return the SAME verdict for every
+    // coefficient, which is equally uninformative.
+    const { below, above } = boundaryDividends();
+    return (
+      simulatedDivCycles(above, KYBER_Q, true) / 2 + simulatedDivCycles(below, KYBER_Q, true) / 2
+    );
   }
 
   const w = normalizeCoefficient(secretCoefficient + probeOffset);
-  const dividend = 2 * w + Math.floor(KYBER_Q / 2);
-  return simulatedDivCycles(dividend, KYBER_Q, true);
+  return simulatedDivCycles(kyberSlash1Dividend(w), KYBER_Q, true);
 }
 
 /**
  * The decision threshold, derived purely from the attacker's knowledge of the
- * platform timing model — the midpoint of the two udiv latency levels at the
- * boundary. Recomputed each call so it tracks whichever platform is active.
+ * platform timing model — the midpoint of the two cost levels either side of
+ * the target's step. Recomputed each call so it tracks whichever platform is
+ * active.
  */
 function boundaryThreshold(): number {
-  const below = simulatedDivCycles(BOUNDARY_DIVIDEND_BELOW, KYBER_Q, false);
-  const above = simulatedDivCycles(BOUNDARY_DIVIDEND_ABOVE, KYBER_Q, false);
-  return (below + above) / 2;
+  const { below, above } = boundaryDividends();
+  return (
+    (simulatedDivCycles(below, KYBER_Q, false) + simulatedDivCycles(above, KYBER_Q, false)) / 2
+  );
 }
 
 /**
  * Reconstruct one secret coefficient from the measured per-probe means.
- * `crossedLow` <=> the s=+1 boundary was crossed; `crossedHigh` <=> the
- * s in {0,+1} boundary was crossed. This is pure inference from timing — the
- * true secret is never consulted.
+ * `crossedLow` <=> the low probe crossed the step (only s = +1 does that);
+ * `crossedHigh` <=> the high probe crossed it (s in {0,+1}). This is pure
+ * inference from timing — the true secret is never consulted.
  */
 function inferCoefficient(lowMean: number, highMean: number, threshold: number): -1 | 0 | 1 {
   const crossedLow = lowMean >= threshold;
   const crossedHigh = highMean >= threshold;
 
   if (crossedLow) {
-    return 1; // both boundaries crossed
+    return 1; // both probes reached the step
   }
   if (crossedHigh) {
-    return 0; // only the t=192 boundary crossed
+    return 0; // only the high probe reached the step
   }
-  return -1; // neither crossed
+  return -1; // neither probe reached the step
 }
 
 /** One probe's outcome in the single-coefficient walkthrough. */
@@ -163,17 +198,27 @@ export interface ProbeStep {
   probe: number;
   /** w = s + probe, the decrypted coefficient the device divides on. */
   w: number;
-  /** The dividend 2*w + q/2 that the udiv instruction actually processes. */
+  /** The dividend 2*w + 1664 the divider actually processes. */
   dividend: number;
   /** Noiseless cycle cost from the platform model. */
   cycles: number;
-  /** True when this probe's dividend lands at/above the ~2048 boundary (slow). */
+  /** True when this probe's dividend lands at/above the target's step (slow). */
   slow: boolean;
 }
 
 export interface CoefficientWalkthrough {
   secret: -1 | 0 | 1;
   threshold: number;
+  /** The numerator at which the active target's cost steps up. */
+  boundaryNumerator: number;
+  /** The coefficient value that boundary corresponds to. */
+  boundaryCoefficient: number;
+  /** Cycle cost either side of the step, and the jump between them. */
+  fastCycles: number;
+  slowCycles: number;
+  jumpCycles: number;
+  /** What performs the division on this target (`__divsi3` or `udiv`). */
+  divisionOp: string;
   low: ProbeStep;
   high: ProbeStep;
   inferred: -1 | 0 | 1;
@@ -191,16 +236,30 @@ export interface CoefficientWalkthrough {
  */
 export function walkthroughCoefficient(secret: -1 | 0 | 1): CoefficientWalkthrough {
   const threshold = boundaryThreshold();
+  const boundary = primaryCoefficientStep();
+  const [lowProbe, highProbe] = activeProbes();
   const step = (probe: number): ProbeStep => {
     const w = secret + probe;
-    const dividend = 2 * normalizeCoefficient(w) + Math.floor(KYBER_Q / 2);
+    const dividend = kyberSlash1Dividend(normalizeCoefficient(w));
     const cycles = simulatedDivCycles(dividend, KYBER_Q, false);
     return { probe, w, dividend, cycles, slow: cycles >= threshold };
   };
-  const low = step(PROBE_LOW);
-  const high = step(PROBE_HIGH);
+  const low = step(lowProbe);
+  const high = step(highProbe);
   const inferred = inferCoefficient(low.cycles, high.cycles, threshold);
-  return { secret, threshold, low, high, inferred };
+  return {
+    secret,
+    threshold,
+    boundaryNumerator: boundary.numerator,
+    boundaryCoefficient: boundary.coefficient,
+    fastCycles: boundary.fromCycles,
+    slowCycles: boundary.toCycles,
+    jumpCycles: boundary.jump,
+    divisionOp: getPlatformProfile().divisionOp,
+    low,
+    high,
+    inferred,
+  };
 }
 
 /**
@@ -219,6 +278,17 @@ export interface SecretKey {
  * result to {−1, 0, +1} (`collapseCoefficient`) because the two-probe
  * walkthrough distinguishes exactly three values. It is a reduced, toy secret,
  * not a standards-conformant ML-KEM-768 key.
+ *
+ * The real attack does not need that reduction: the paper's Pi 2 demo scales
+ * the secret by an attacker-chosen multiplier û so one coefficient value alone
+ * swings the numerator across the 3329 step, and separates Kyber512's full
+ * −3…+3 range by varying û — §5.1.2 works through û = 72 ("If s[0][155] happens
+ * to be 3, then m′[255] mod 3329 is 3321, producing a slow division. Otherwise
+ * m′[255] is between 64 and 424, producing a fast division"), then notes that
+ * −72 distinguishes −3, 107 distinguishes {2,3}, "etc.". The Cortex-M4
+ * KyberSlash2 attack separates Kyber768's −2…+2 with four (û, v̂) parameter
+ * pairs (Table 3). This lab uses û = 1 and two adjacent probes, which is the
+ * same mechanism with less bookkeeping and three resolvable values.
  */
 export function generateSecretKey(): SecretKey {
   const raw = new Uint8Array(256 * 3);
@@ -295,17 +365,25 @@ export function statisticalAnalysis(
   confidenceLevel: number;
   estimatedQueriesNeeded: number;
 } {
-  const entries = PROBES.map((probe) => {
-    const values = timingSamples.get(probe) ?? [];
-    return { probe, values, mean: mean(values) };
-  });
+  // Iterate the caller's own buckets rather than the active platform's probe
+  // offsets, so a profile captured on one target can still be analysed after a
+  // platform switch (and so the verification scripts can feed synthetic ones).
+  const entries = [...timingSamples.entries()].map(([probe, values]) => ({
+    probe,
+    values,
+    mean: mean(values),
+  }));
+
+  if (entries.length === 0) {
+    return { distinguishable: false, confidenceLevel: 0, estimatedQueriesNeeded: MIN_SAMPLES_PER_PROBE * 2 };
+  }
 
   const sampleCount = entries.reduce((running, entry) => running + entry.values.length, 0);
   if (sampleCount === 0) {
     return {
       distinguishable: false,
       confidenceLevel: 0,
-      estimatedQueriesNeeded: MIN_SAMPLES_PER_PROBE * PROBES.length,
+      estimatedQueriesNeeded: MIN_SAMPLES_PER_PROBE * entries.length,
     };
   }
 
@@ -322,8 +400,9 @@ export function statisticalAnalysis(
     }, 0) / entries.length;
 
   // Signal = how far the probe means sit from the decision threshold. On the
-  // vulnerable path at least one probe lands a full bucket (~5 cycles on A7)
-  // away; on the patched path every probe hugs the threshold, so this is ~0.
+  // vulnerable path every probe lands half a step away (10 cycles on the
+  // Cortex-A7 __divsi3 model, 1 cycle on the Cortex-M4 udiv model); on the
+  // patched path every probe hugs the threshold, so this is ~0.
   const threshold = boundaryThreshold();
   const spread = Math.max(...entries.map((entry) => Math.abs(entry.mean - threshold)));
   // Proper t-statistic: the standard error of the mean shrinks as sqrt(N), so
@@ -332,7 +411,7 @@ export function statisticalAnalysis(
   // stays at the noise floor no matter how many queries are spent.
   const standardError = Math.sqrt(Math.max(pooledVariance, 1e-6) / sampleCount);
   const effectSize = spread / Math.max(standardError, 1e-6);
-  const coverage = Math.min(1, sampleCount / (MIN_SAMPLES_PER_PROBE * PROBES.length * 2));
+  const coverage = Math.min(1, sampleCount / (MIN_SAMPLES_PER_PROBE * entries.length * 2));
   const confidenceLevel = Math.max(0, Math.min(0.999, ((effectSize - 0.35) / 1.4) * coverage));
   const distinguishable =
     entries.every((entry) => entry.values.length >= MIN_SAMPLES_PER_PROBE) && effectSize >= 1.35;
@@ -373,7 +452,8 @@ export function attackIteration(
     throw new Error('attack state metadata was not initialized');
   }
 
-  const probe = PROBES[state.queries % PROBES.length];
+  const probes = activeProbes();
+  const probe = probes[state.queries % probes.length];
   // The device holds the secret; the attacker only supplies `probe`.
   const secretCoefficient = state.targetKey.coeffs[state.currentCoefficient];
   const queryTime = oracleQueryTime(secretCoefficient, probe, vulnerableImplementation);
@@ -390,8 +470,8 @@ export function attackIteration(
   const analysis = statisticalAnalysis(state.timingProfile);
   if (vulnerableImplementation && analysis.distinguishable) {
     const threshold = boundaryThreshold();
-    const lowMean = mean(state.timingProfile.get(PROBE_LOW) ?? []);
-    const highMean = mean(state.timingProfile.get(PROBE_HIGH) ?? []);
+    const lowMean = mean(state.timingProfile.get(probes[0]) ?? []);
+    const highMean = mean(state.timingProfile.get(probes[1]) ?? []);
     const recovered = inferCoefficient(lowMean, highMean, threshold);
 
     metadata.recovered[state.currentCoefficient] = recovered;

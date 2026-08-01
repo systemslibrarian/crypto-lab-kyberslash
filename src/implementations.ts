@@ -1,4 +1,4 @@
-import { simulatedDivCycles } from './timing-model';
+import { patchedDivCycles, simulatedDivCycles } from './timing-model';
 
 /**
  * ML-KEM-768 parameters (Kyber768 / NIST security level 3).
@@ -13,9 +13,14 @@ export const KYBER_PARAMS = {
   dv: 4,
 } as const;
 
+/**
+ * ILLUSTRATIVE. Everything in these routines other than the divisions, folded
+ * into a constant so the traces have a plausible scale. The paper does not
+ * report per-function overheads for either target; nothing in the lab depends
+ * on these values, only on the division costs that sit on top of them.
+ */
 const POLY_TOMSG_FIXED_OVERHEAD = 1056;
 const POLY_COMPRESS_FIXED_OVERHEAD = 640;
-const BARRETT_DIV_CYCLES = 8;
 
 /**
  * Precomputed Barrett constants for q=3329.
@@ -111,7 +116,9 @@ export function polyCompressVulnerable(
 /**
  * PATCHED: poly_tomsg using Barrett reduction (constant-time).
  * Replaces `x / q` with `(x * BARRETT_INV) >> 32`.
- * Cycle count is FIXED regardless of input.
+ * Cycle count is FIXED regardless of input — the exact constant is illustrative
+ * (see `patchedCycles` in timing-model.ts); the point is only that it is one
+ * number that the operand cannot move.
  */
 export function polyTomsgPatched(
   coeffs: Int16Array,
@@ -137,7 +144,7 @@ export function polyTomsgPatched(
 
   return {
     msg,
-    totalCycles: POLY_TOMSG_FIXED_OVERHEAD + KYBER_PARAMS.n * BARRETT_DIV_CYCLES,
+    totalCycles: POLY_TOMSG_FIXED_OVERHEAD + KYBER_PARAMS.n * patchedDivCycles(),
   };
 }
 
@@ -165,6 +172,6 @@ export function polyCompressPatched(
 
   return {
     compressed,
-    totalCycles: POLY_COMPRESS_FIXED_OVERHEAD + coeffs.length * BARRETT_DIV_CYCLES,
+    totalCycles: POLY_COMPRESS_FIXED_OVERHEAD + coeffs.length * patchedDivCycles(),
   };
 }

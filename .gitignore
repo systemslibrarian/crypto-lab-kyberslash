@@ -30,3 +30,7 @@ scripts/shot-*.png
 *.njsproj
 *.sln
 *.sw?
+
+# Review notes kept locally, not part of the shipped demo
+chat*.md
+gem.md

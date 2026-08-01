@@ -1604,7 +1604,7 @@ function render(focusTarget?: string): void {
             <div><dt>n = ${KYBER_PARAMS.n}</dt><dd>coefficients per polynomial</dd></div>
             <div><dt>k = ${KYBER_PARAMS.k}</dt><dd>polynomials in the secret vector (768 = 3×256 coefficients total)</dd></div>
             <div><dt>q = ${KYBER_PARAMS.q}</dt><dd>the prime modulus — the constant every coefficient is divided by, and the source of the leak</dd></div>
-            <div><dt>η1 = ${KYBER_PARAMS.eta1}, η2 = ${KYBER_PARAMS.eta2}</dt><dd>noise widths of the centered binomial distribution the secret is sampled from (so each coefficient is small: −1, 0, or +1 here)</dd></div>
+            <div><dt>η1 = ${KYBER_PARAMS.eta1}, η2 = ${KYBER_PARAMS.eta2}</dt><dd>noise widths of the centered binomial distribution the secret is sampled from — with η1 = 2 every real ML-KEM-768 secret coefficient lies in −2…+2. This lab narrows them to −1, 0, +1 so one coefficient falls out of exactly two timing probes.</dd></div>
             <div><dt>du = ${KYBER_PARAMS.du}, dv = ${KYBER_PARAMS.dv}</dt><dd>ciphertext compression bit-widths — dv drives the KyberSlash2 (poly_compress) variant</dd></div>
           </dl>
         </details>

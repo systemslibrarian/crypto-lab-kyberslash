@@ -10,14 +10,22 @@ export type Platform = 'cortex-a7' | 'cortex-m4';
  * depending on operand magnitude. We cannot measure this from
  * JavaScript. Instead, we simulate the known leakage pattern.
  *
- * Reference values from the KyberSlash paper (Table 3, approx.):
- *   Cortex-A7 udiv cycles:
- *     dividend 0-255:     ~7 cycles
- *     dividend 256-2047:  ~12 cycles
- *     dividend 2048-8191: ~20 cycles
- *     dividend 8192+:     ~30 cycles
- *   Cortex-M4 udiv cycles:
- *     2-12 cycles, narrower spread but still exploitable.
+ * These bucket values are an ILLUSTRATIVE step function, not measurements
+ * transcribed from the KyberSlash paper. What the paper actually reports:
+ *
+ *   Cortex-A7 / Raspberry Pi 2 (paper §5.1.1): with gcc -Os the division is
+ *     NOT a `udiv` instruction at all — the default ABI does not guarantee one,
+ *     so gcc emits a call to the `__divsi3` software routine, whose cost jumps
+ *     by ~20 cycles when the numerator reaches 3329, by a further ~2 cycles at
+ *     4096, and by a further ~1 cycle at 8192 (i.e. at coefficients t = 833,
+ *     1216, 3264 for the dividend 2t + 1664).
+ *   Cortex-M4 / STM32F407VG (paper Table 4): the `udiv` instruction takes
+ *     2-12 cycles; with d = 3329 the crossovers sit at numerators
+ *     1, 2^11, 2^15, 2^19, 2^23, 2^27, 2^31.
+ *
+ * The buckets below keep the same qualitative shape (a step function of
+ * operand magnitude) with a boundary the demo's two-probe walkthrough can
+ * straddle; they are not the paper's cycle counts.
  */
 interface PlatformProfile {
   platform: Platform;

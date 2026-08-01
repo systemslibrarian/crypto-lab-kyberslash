@@ -212,7 +212,13 @@ export interface SecretKey {
 }
 
 /**
- * Generate a random ML-KEM-768 secret key (centered binomial dist).
+ * Generate a random 768-coefficient secret vector shaped like an ML-KEM-768 key.
+ *
+ * NOTE: a real ML-KEM-768 secret is sampled from CBD with η1 = 2, so its
+ * coefficients lie in −2…+2. This demo draws CBD_2 and then collapses the
+ * result to {−1, 0, +1} (`collapseCoefficient`) because the two-probe
+ * walkthrough distinguishes exactly three values. It is a reduced, toy secret,
+ * not a standards-conformant ML-KEM-768 key.
  */
 export function generateSecretKey(): SecretKey {
   const raw = new Uint8Array(256 * 3);

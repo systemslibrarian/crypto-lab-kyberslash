@@ -60,10 +60,34 @@ assert(
   'expected Barrett reciprocal check to evaluate to 1',
 );
 
+// Exhaustive check behind two on-screen claims in Exhibit 1: that the lab's own
+// 2^32 Barrett form AND the constant pq-crystals actually shipped (commit
+// dda29cc: t <<= 1; t += 1665; t *= 80635; t >>= 28; t &= 1) both reproduce
+// `(((t << 1) + KYBER_Q/2) / KYBER_Q) & 1` for every coefficient poly_tomsg can
+// see. The screen says "checked exhaustively over all 3,329 coefficient values";
+// this is that check.
+let barrettMismatches = 0;
+let upstreamMismatches = 0;
+for (let t = 0; t < KYBER_PARAMS.q; t += 1) {
+  const numerator = (t << 1) + Math.floor(KYBER_PARAMS.q / 2);
+  const reference = Math.floor(numerator / KYBER_PARAMS.q) & 1;
+  const labBarrett = Math.floor((numerator * BARRETT_INV_Q) / 2 ** 32) & 1;
+  const upstream = (Math.imul((t << 1) + 1665, 80635) >>> 28) & 1;
+  if (labBarrett !== reference) barrettMismatches += 1;
+  if (upstream !== reference) upstreamMismatches += 1;
+}
+assert(barrettMismatches === 0, `lab Barrett form disagrees with / q on ${barrettMismatches} coefficients`);
+assert(
+  upstreamMismatches === 0,
+  `upstream 80635 >> 28 form disagrees with / q on ${upstreamMismatches} coefficients`,
+);
+
 console.log(
   JSON.stringify(
     {
       barrettInvQ: BARRETT_INV_Q,
+      barrettMismatches,
+      upstreamMismatches,
       vulnerableTomsgA: vulnerableTomsgA.totalCycles,
       vulnerableTomsgB: vulnerableTomsgB.totalCycles,
       patchedTomsg: patchedTomsgA.totalCycles,

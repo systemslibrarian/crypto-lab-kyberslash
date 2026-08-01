@@ -106,31 +106,56 @@ const VULNERABLE_LINES: readonly CodeLine[] = [
   { text: '}' },
 ];
 
+/**
+ * The ACTUAL upstream fix, verbatim from pq-crystals/kyber commit dda29cc
+ * ("Updated poly_tomsg to prevent a compiler from using DIV", 1 December 2023).
+ * It is a multiply-and-shift — the same idea the Barrett panel below explains —
+ * but with a 28-bit constant, `floor(2^28/3329) = 80635`, and `+1665` rather
+ * than `+1664`. Verified exhaustively: it returns the same bit as the original
+ * `(((t << 1) + KYBER_Q/2)/KYBER_Q) & 1` for every t in 0..3328.
+ *
+ * Showing an invented constant here would have been the easy thing to do, and
+ * would have been a claim the repository could not back. This is what shipped.
+ */
 const PATCHED_LINES: readonly CodeLine[] = [
-  { text: '// Patched constant-time version - Barrett reduction' },
-  { text: `// BARRETT_INV = floor(2^32 / 3329) + 1 = ${BARRETT_INV_Q}` },
+  { text: '// pq-crystals/kyber ref/poly.c, commit dda29cc (1 Dec 2023)' },
+  { text: '// 80635 = floor(2^28 / 3329); multiply-and-shift, no DIV' },
   { text: '' },
   { text: 'for (int j = 0; j < 8; j++) {' },
   { text: '    t = a->coeffs[8*i+j];' },
-  { text: '    t += ((int16_t)t >> 15) & KYBER_Q;' },
   { text: '' },
   { text: '    // No division instruction on secret data' },
-  { text: '    t = ((((uint32_t)t << 1) + KYBER_Q/2)', hl: 'safe' },
-  { text: '         * BARRETT_INV >> 32) & 1;', hl: 'safe' },
+  { text: '    t <<= 1;', hl: 'safe' },
+  { text: '    t += 1665;', hl: 'safe' },
+  { text: '    t *= 80635;', hl: 'safe' },
+  { text: '    t >>= 28;', hl: 'safe' },
+  { text: '    t &= 1;', hl: 'safe' },
   { text: '' },
   { text: '    msg[i] |= t << j;' },
   { text: '}' },
 ];
 
+/**
+ * Every entry below is taken from the KyberSlash project's own History section
+ * (https://kyberslash.cr.yp.to/papers.html) and its per-library patch table
+ * (https://kyberslash.cr.yp.to/libraries.html), or from the pq-crystals commit
+ * log. An earlier version of this array placed the whole story in 2024 and
+ * asserted that the reference code was "patched before public disclosure" —
+ * both wrong. The discovery, the reference patch and the public announcement
+ * all happened in November-December 2023, and most downstream libraries were
+ * patched *after* the issue was public.
+ */
 const TIMELINE = [
   ['2022 Jul', 'NIST selects Kyber for post-quantum standardization.'],
-  ['2024 Jan', 'Cryspen, Bhargavan, Kiefer, and Tamvada spot the division issue while building a verified Rust implementation.'],
-  ['2024 Apr', 'KyberSlash paper submitted to TCHES.'],
-  ['2024 Jun', 'Reference code patched before public disclosure.'],
-  ['2024 Aug', 'Responsible disclosure window closes; ML-KEM lands in FIPS 203.'],
-  ['2024-2025', 'Patches propagate through PQClean, liboqs, libpqcrypto, mlkem-native, OpenSSL integrations, and hardware designs.'],
-  ['2025 Jan', 'Final paper published in TCHES 2025 issue 2.'],
-  ['2025 Mar', 'CHES 2025 Best Paper Award.'],
+  ['2023 Nov', 'Goutam Tamvada, Karthikeyan Bhargavan and Franziskus Kiefer (Cryspen) notice the secret-dependent division while writing a formally verified Rust implementation of Kyber, and report it to the pq-crystals maintainer.'],
+  ['2023 Dec 1', 'pq-crystals/kyber reference code patched for KyberSlash1 — commit dda29cc, "Updated poly_tomsg to prevent a compiler from using DIV". Still non-public.'],
+  ['2023 Dec 15', 'Daniel J. Bernstein, who found the same divisions independently while auditing SUPERCOP, announces them on the NIST pqc-forum as a "possibly exploitable" issue. This is the public disclosure.'],
+  ['2023 Dec 19', 'The kyberslash.cr.yp.to FAQ goes up. On exploitability it says only: "Maybe. Patch now; don’t wait to see whether an exploit is demonstrated."'],
+  ['2023 Dec 30', 'Prasanna Ravi and Matthias J. Kannwischer report the further secret-dependent divisions in poly_compress / polyvec_compress — KyberSlash2; pq-crystals patches them. Bernstein posts a Raspberry Pi 2 demo recovering a complete Kyber512 key, succeeding twice in three experiments.'],
+  ['2024', 'Downstream patching takes months, not days, and happens in the open: cloudflare/circl 1 Jan, liboqs 8 Jan (KyberSlash2), PQClean 25 Jan, pqm4 23 Feb (KyberSlash2), kyberlib 12 May, PQClean aarch64 19 Sep.'],
+  ['2024 Jun', 'Improved KyberSlash1 and KyberSlash2 demos published alongside the first version of the paper.'],
+  ['2024 Aug 13', 'ML-KEM published as FIPS 203 — eight months after the leak was public.'],
+  ['2025', 'Final paper in IACR TCHES 2025(2):209–234; CHES 2025 Best Paper Award. As of the project’s August 2025 survey, two Kyber libraries still had divisions on secret inputs.'],
 ] as const;
 
 const LESSONS = [
@@ -240,7 +265,7 @@ const TRY_THIS: readonly string[] = [
   'Toggle between <strong>Vulnerable reference C</strong> and <strong>Patched Barrett reduction</strong> below. The single highlighted line is the entire bug — and the entire fix. The vulnerable line divides by <code>q = 3329</code>; the patched line replaces division with multiplication and a shift.',
   'Press <strong>Run 100 measurements</strong>. Watch the verdict bar above turn red. The vulnerable mean drifts; the patched mean stays flat — that timing gap is the secret leaking. Then try <strong>Cortex-M4</strong> in the hero — same story, smaller spread.',
   'Press <strong>Launch KyberSlash attack</strong>. The 768 cells below light up coefficient by coefficient, and the gold pill confirms the recovered key matches the real one. When it finishes, switch to <strong>Patched path</strong> and launch again — nothing happens, because the leak is gone.',
-  'Skim the dates. NIST standardised Kyber in <strong>2022</strong>. Cryspen spotted the bug in <strong>2024</strong>. That two-year gap is the window any real deployment had to weather, and it is why "standardised" and "safe to deploy" are not the same property.',
+  'Skim the dates. NIST <em>selected</em> Kyber in <strong>July 2022</strong>; the division leak was found and made public in <strong>November&ndash;December 2023</strong>; ML-KEM only became <strong>FIPS 203</strong> in <strong>August 2024</strong>, eight months after the leak was public. Note also what the patch dates say: most libraries were fixed <em>after</em> disclosure, over months. "Standardised" and "safe to deploy on your target" are not the same property.',
   'Read one lesson per scroll. The cards at the bottom point to neighbouring failure modes in the broader Crypto Lab — fault injection, classical timing oracles, padding oracles — so you can see how KyberSlash fits into the wider implementation-bug genealogy.',
 ];
 
@@ -918,9 +943,9 @@ function renderHero(): string {
           <span class="platform-current">${state.attackRunning || state.measuring ? 'platform locked while a run is in progress' : `simulating ${escapeHtml(platformLabel)} — biggest exploitable division step here is <strong>+${primaryStep.jump} cycle${primaryStep.jump === 1 ? '' : 's'}</strong> at coefficient <strong>${formatInteger(primaryStep.coefficient)}</strong> · click to switch to ${escapeHtml(altLabel)}`}</span>
         </div>
         <div class="hero-notes">
-          <span class="pill pill--danger">KyberSlash1: decapsulation / poly_tomsg</span>
-          <span class="pill pill--danger">KyberSlash2: encapsulation / poly_compress</span>
-          <span class="pill pill--safe">Patched before disclosure</span>
+          <span class="pill pill--danger">KyberSlash1: PKE decryption / poly_tomsg</span>
+          <span class="pill pill--danger">KyberSlash2: PKE encryption / poly_compress &mdash; exploited via re-encryption inside decapsulation</span>
+          <span class="pill pill--safe">Reference code patched 1 Dec 2023 &middot; public 15 Dec 2023</span>
         </div>
       </div>
     </section>`;
@@ -969,6 +994,7 @@ function renderBarrettIntuition(): string {
       </div>
       ${renderFlatCostBands(dividend)}
       <p class="barrett-flatline">Same numerator, same number line — but now every band collapses to one fixed cost. Where the numerator lands no longer changes the clock. That is what &ldquo;constant-time&rdquo; means, made mechanical.</p>
+      <p class="barrett-flatline">What pq-crystals actually shipped is this shape with a smaller constant: <code>t &lt;&lt;= 1; t += 1665; t *= 80635; t &gt;&gt;= 28;</code> where <code>80635 = floor(2<sup>28</sup>/3329)</code>. The 32-bit constant above is the variant this lab computes with. Both agree with <code>floor(x / 3329)</code> on every numerator <code>poly_tomsg</code> can produce — checked exhaustively over all 3,329 coefficient values.</p>
     </section>`;
 }
 
@@ -983,9 +1009,10 @@ function renderSmokingGun(): string {
           'Modern x86_64 often avoids the bug only because the compiler rewrites division into multiplication, but -Os can put division back.',
         ]
       : [
-          `The fix uses Barrett reduction with BARRETT_INV = ${BARRETT_INV_Q}.`,
-          'Multiplication plus shift removes the variable-latency division instruction from the secret path.',
-          'This was rolled out through major ML-KEM libraries before disclosure.',
+          'This is the upstream fix verbatim (pq-crystals/kyber commit dda29cc, 1 December 2023): the divide is replaced by a multiply by 80635 = floor(2^28/3329) and a 28-bit shift.',
+          'Multiplication plus shift removes the variable-latency division instruction from the secret path — mul and shift cost the same on every operand.',
+          `The lab's own JavaScript model uses the equivalent 32-bit constant floor(2^32/3329) + 1 = ${BARRETT_INV_Q}, explained below; both return exactly floor(x / 3329) over the range this line produces.`,
+          'Rollout was not instant: the reference code was fixed two weeks before public disclosure, but most downstream libraries were patched in the weeks and months after it (see Exhibit 4).',
         ];
 
   return `
@@ -1663,12 +1690,12 @@ function renderTimeline(): string {
       </div>
       <div class="callout-row">
         <article class="callout danger">
-          <h3>Implementations that were vulnerable before patching</h3>
-          <p>Reference C code, libpqcrypto-kyber, multiple liboqs-dependent stacks, embedded ports, and some hardware or FPGA designs.</p>
+          <h3>Had divisions on secret inputs at the start of December 2023</h3>
+          <p>The pq-crystals reference C, and the ports that inherited its shape: liboqs, PQClean (clean and aarch64), pqm4, botan, aws-lc, cloudflare/circl (KyberSlash2 only), kyber-k2so, crystals-go, rustpq/pqcrypto (patched downstream in Signal on 5 January 2024), zig's std.crypto, kyberlib, pypqc. Two more — Argyle-Software/kyber and crystals-kyber-javascript — were still carrying a division as of the project's August 2025 survey.</p>
         </article>
         <article class="callout safe">
-          <h3>Implementations that avoided the bug</h3>
-          <p>Cryspen's verified Rust work, some constant-time libraries designed around multiplication-based reductions, and many AVX2 paths that never used this division pattern.</p>
+          <h3>Reportedly never had divisions on secret inputs</h3>
+          <p>BoringSSL's Kyber, filippo.io/mlkem768, libjade's AVX2 and reference Kyber, and the AVX2 paths of pq-crystals/kyber, PQClean and kyberlib. Source: the KyberSlash project's own per-library survey — not a general claim that these are side-channel free.</p>
         </article>
       </div>
     </section>`;
@@ -1691,11 +1718,11 @@ function renderLessons(): string {
       <div class="callout-row">
         <article class="callout neutral">
           <h3>KyberSlash2 in one line</h3>
-          <p>poly_compress used secret-dependent division during encapsulation. In this demo the same coefficient vector lands at ${formatInteger(compressExample.totalCycles)} cycles before the patch and ${formatInteger(compressPatched.totalCycles)} after it.</p>
+          <p>poly_compress and polyvec_compress divide by q during PKE <em>encryption</em>. Inside encapsulation that is harmless — the ciphertext is public. The damage is that Kyber's Fujisaki-Okamoto transform re-runs encryption inside <em>decapsulation</em>, where the input is secret-derived, turning the timing into a plaintext-checking oracle. In this demo the same coefficient vector lands at ${formatInteger(compressExample.totalCycles)} cycles before the patch and ${formatInteger(compressPatched.totalCycles)} after it.</p>
         </article>
         <article class="callout neutral">
-          <h3>Responsible disclosure</h3>
-          <p>The vulnerable paths were patched across major implementations before public disclosure. This lab teaches the failure mode and the fix; it is not a guide to attacking maintained libraries.</p>
+          <h3>What "responsible disclosure" actually looked like</h3>
+          <p>The pq-crystals reference code was patched for KyberSlash1 on 1 December 2023, two weeks before the issue went public — but that is where the tidy version ends. KyberSlash2 was reported and patched on the day it was announced, and downstream libraries were fixed over the following weeks and months, in the open. This lab teaches the failure mode and the fix; it is not a guide to attacking maintained libraries.</p>
         </article>
       </div>
       <div class="crosslinks">

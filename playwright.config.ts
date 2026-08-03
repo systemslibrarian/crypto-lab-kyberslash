@@ -16,12 +16,12 @@ export default defineConfig({
     // dist/; without the build in front, a failing build leaves the previous
     // good bundle on disk and the suite passes green against code that no
     // longer compiles — silently invalidating mutation checks.
-    command: 'npm run build && npm run preview -- --port 4220 --strictPort',
-    url: 'http://localhost:4220/crypto-lab-kyberslash/',
+    command: 'npm run build && npm run preview -- --port 4661 --strictPort',
+    url: 'http://localhost:4661/crypto-lab-kyberslash/',
     reuseExistingServer: !process.env.CI,
   },
   use: {
-    baseURL: 'http://localhost:4220/crypto-lab-kyberslash/',
+    baseURL: 'http://localhost:4661/crypto-lab-kyberslash/',
     colorScheme: 'dark',
   },
 });

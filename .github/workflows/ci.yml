@@ -44,10 +44,10 @@ jobs:
 
       - name: UI smoke and interaction checks
         run: |
-          npm run preview -- --port 4173 &
+          npm run preview -- --port 4705 --strictPort &
           SERVER_PID=$!
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:4173/crypto-lab-kyberslash/ >/dev/null; then
+            if curl -sf http://localhost:4705/crypto-lab-kyberslash/ >/dev/null; then
               echo "preview is up"
               break
             fi

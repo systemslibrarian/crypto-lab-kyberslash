@@ -4,7 +4,7 @@
 // Requires playwright + chromium (npx playwright install chromium).
 import { chromium } from 'playwright';
 
-const BASE = process.env.PREVIEW_URL ?? 'http://localhost:4173/crypto-lab-kyberslash/';
+const BASE = process.env.PREVIEW_URL ?? 'http://localhost:4705/crypto-lab-kyberslash/';
 const results = [];
 const ok = (label, cond, detail = '') => {
   results.push({ label, pass: !!cond, detail });

@@ -358,13 +358,13 @@ export function getRecoveredCoeff(state: AttackState, index: number): number | n
  * Statistical test: can we distinguish the boundary-crossing signal from the
  * measurement noise floor? Operates purely on measured cycle counts.
  */
-export function statisticalAnalysis(
-  timingSamples: Map<number, number[]>,
-): {
+export interface TimingAnalysis {
   distinguishable: boolean;
   confidenceLevel: number;
   estimatedQueriesNeeded: number;
-} {
+}
+
+export function statisticalAnalysis(timingSamples: Map<number, number[]>): TimingAnalysis {
   // Iterate the caller's own buckets rather than the active platform's probe
   // offsets, so a profile captured on one target can still be analysed after a
   // platform switch (and so the verification scripts can feed synthetic ones).
@@ -438,12 +438,21 @@ export function attackIteration(
   queryTime: number;
   bitsRecoveredThisRound: number;
   running: boolean;
+  /**
+   * The correlation test AS IT STOOD WHEN THIS ITERATION DECIDED. Returned
+   * because the sample buckets are cleared the instant a coefficient is
+   * recovered: a caller that re-derives the analysis from `state.timingProfile`
+   * after the fact can only ever observe a partially-refilled bucket, and so
+   * would report the noise floor at the exact moment the signal was strongest.
+   */
+  analysis: TimingAnalysis;
 } {
   if (state.currentCoefficient >= state.targetKey.coeffs.length) {
     return {
       queryTime: 0,
       bitsRecoveredThisRound: 0,
       running: false,
+      analysis: statisticalAnalysis(state.timingProfile),
     };
   }
 
@@ -485,6 +494,7 @@ export function attackIteration(
     queryTime,
     bitsRecoveredThisRound,
     running: state.currentCoefficient < state.targetKey.coeffs.length,
+    analysis,
   };
 }
 

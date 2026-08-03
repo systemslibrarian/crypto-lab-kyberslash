@@ -11,6 +11,7 @@ import {
   walkthroughCoefficient,
   type AttackState,
   type SecretKey,
+  type TimingAnalysis,
 } from './attack';
 import {
   BARRETT_INV_Q,
@@ -80,6 +81,15 @@ interface AppState {
   attackEvents: RecoveryEvent[];
   attackLog: LogEntry[];
   attackStartedAt: number | null;
+  /**
+   * The correlation test behind the most recent recovery decision (or, before
+   * any decision, the live one). Held in state rather than recomputed at paint
+   * time because `attackIteration` clears the sample buckets the moment a
+   * coefficient falls, so re-deriving it from the live profile reported the
+   * noise floor at precisely the moment the signal was decisive — the readout
+   * used to print "Noise floor only" beside "confidence = 0.999".
+   */
+  attackAnalysis: TimingAnalysis | null;
   milestonesReached: number[];
   statusMessage: string;
   walkthroughSecret: -1 | 0 | 1;
@@ -320,6 +330,7 @@ const state: AppState = {
   attackEvents: [],
   attackLog: [],
   attackStartedAt: null,
+  attackAnalysis: null,
   milestonesReached: [],
   statusMessage: 'KyberSlash lab ready. Initial timing traces loaded.',
   walkthroughSecret: 0,
@@ -611,6 +622,7 @@ function resetAttack(mode: AttackMode = state.attackMode): void {
   state.attackEvents = [];
   state.attackLog = [];
   state.attackStartedAt = null;
+  state.attackAnalysis = null;
   state.milestonesReached = [];
   setStatusMessage(`Attack mode set to ${mode === 'vulnerable' ? 'vulnerable implementation' : 'patched implementation'}.`);
 }
@@ -714,6 +726,15 @@ async function startAttack(): Promise<void> {
 
       const attackedCoefficient = state.attackState.currentCoefficient;
       const result = attackIteration(state.attackState, state.attackMode === 'vulnerable');
+      // Hold the analysis that last DECIDED a coefficient. Once a recovery has
+      // happened, later mid-coefficient iterations are refilling a bucket that
+      // was just cleared, and their `distinguishable = false` says nothing about
+      // the signal — only that the samples have not been re-gathered yet.
+      // Painting those would label a confidence of 0.999 "Noise floor only".
+      // Before the first recovery there is nothing better, so track live.
+      if (result.bitsRecoveredThisRound > 0 || state.attackState.currentCoefficient === 0) {
+        state.attackAnalysis = result.analysis;
+      }
       state.attackQueryTimes = trimTrace([...state.attackQueryTimes, result.queryTime]);
 
       if (result.bitsRecoveredThisRound > 0) {
@@ -1583,7 +1604,7 @@ function renderAttackTraceInner(): string {
 }
 
 function renderAnalysisBoxInner(): string {
-  const analysis = statisticalAnalysis(state.attackState.timingProfile);
+  const analysis = state.attackAnalysis ?? statisticalAnalysis(state.attackState.timingProfile);
   return `
             <p>Timing correlation test</p>
             <strong>${analysis.distinguishable ? 'Signal present' : 'Noise floor only'}</strong>

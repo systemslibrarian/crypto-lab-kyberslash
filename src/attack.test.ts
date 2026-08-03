@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeProbes,
+  attackIteration,
   createAttackState,
   getRecoveredCoeff,
   oracleQueryTime,
@@ -179,6 +180,32 @@ describe('honest key recovery driven by measured timing', () => {
     expect(patched.recoveredKey).toBeNull();
     expect(patched.matches).toBe(false);
     expect(statisticalAnalysis(patched.finalState.timingProfile).distinguishable).toBe(false);
+  });
+
+  /**
+   * REGRESSION. `attackIteration` clears the per-probe sample buckets the
+   * instant a coefficient falls, so re-deriving the correlation test from
+   * `state.timingProfile` afterwards reports the noise floor at exactly the
+   * moment the signal was decisive. The iteration must therefore hand back the
+   * analysis it actually decided on — the UI reads that, not the cleared state.
+   */
+  it('returns the analysis that decided the recovery, not the post-reset one', () => {
+    setActivePlatform('cortex-a7');
+    const state = createAttackState(randomKey(4, 7));
+
+    let decidingIteration: ReturnType<typeof attackIteration> | null = null;
+    for (let i = 0; i < 500 && state.currentCoefficient === 0; i += 1) {
+      const result = attackIteration(state, true);
+      if (result.bitsRecoveredThisRound > 0) {
+        decidingIteration = result;
+      }
+    }
+
+    expect(decidingIteration).not.toBeNull();
+    // The deciding analysis says the signal is real...
+    expect(decidingIteration!.analysis.distinguishable).toBe(true);
+    // ...while the profile it left behind cannot say so, because it is empty.
+    expect(statisticalAnalysis(state.timingProfile).distinguishable).toBe(false);
   });
 
   it('works across simulated platforms including the low-signal cortex-m4', async () => {

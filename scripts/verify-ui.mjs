@@ -66,13 +66,11 @@ ok('exhibit rail not hidden behind header', rects.railTop >= (rects.barBottom - 
 
 await page.screenshot({ path: 'scripts/shot-desktop-dark.png', fullPage: false });
 
-// 8. Theme toggle via shared header -> data-theme flips, rail stays themed
+// 8. Dark is the only theme, and the shared header carries no toggle
 await page.evaluate(() => window.scrollTo(0, 0));
-await page.locator('#cl-theme-toggle').click();
-await page.waitForTimeout(150);
 const theme = await page.getAttribute('html', 'data-theme');
-ok('shared header theme toggle works', theme === 'light', `data-theme=${theme}`);
-await page.screenshot({ path: 'scripts/shot-desktop-light.png', fullPage: false });
+ok('page is pinned to the dark theme', theme === 'dark', `data-theme=${theme}`);
+ok('shared header ships no theme toggle', (await page.locator('#cl-theme-toggle').count()) === 0);
 
 // 9. Mobile viewport renders (375px)
 const mobile = await ctx.newPage();

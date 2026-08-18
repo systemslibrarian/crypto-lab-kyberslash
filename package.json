@@ -18,11 +18,11 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.2",
-    "@playwright/test": "^1.61.1",
-    "playwright": "^1.61.1",
-    "tsx": "^4.21.0",
-    "typescript": "~6.0.2",
-    "vite": "^8.0.4",
+    "@playwright/test": "^1.62.1",
+    "playwright": "^1.62.1",
+    "tsx": "^4.23.5",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.0",
     "vitest": "^4.1.10"
   }
 }

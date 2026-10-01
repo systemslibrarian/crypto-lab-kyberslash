@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import { expectNoHorizontalOverflow } from './reflow';
 
 /**
  * WCAG regression gate. Deploys are already gated on the timing-model verify
@@ -125,3 +126,53 @@ test('no WCAG A/AA violations in dark theme', async ({ page }) => {
   await scan(page);
 });
 
+/**
+ * WCAG 1.4.10 reflow at phone width.
+ *
+ * At 380px the exhibit-3 truth table's min-content width exceeded its panel
+ * and the page scrolled sideways to 429px, with the scan above green, because
+ * nothing measured the document at a narrow viewport. Covers every secret the
+ * walkthrough can trace on both targets (each rewrites the table), and the
+ * page after a full attack run.
+ */
+test.describe('reflow at 380px', () => {
+  test.use({ viewport: { width: 380, height: 800 } });
+
+  test('no horizontal page scroll on first paint', async ({ page }) => {
+    await page.goto('.');
+    await expect(page.locator('h1').first()).toBeVisible();
+    await expect(page.locator('.truth-table')).toBeVisible();
+    await expectNoHorizontalOverflow(page, '380px / initial');
+  });
+
+  test('no horizontal page scroll for any traced secret, on either target', async ({ page }) => {
+    await page.goto('.');
+    await expect(page.locator('.truth-table')).toBeVisible();
+    for (const platform of ['a7', 'm4']) {
+      await page.locator(`[data-action="set-platform-${platform}"]`).click();
+      await expect(page.locator(`[data-action="set-platform-${platform}"]`)).toHaveAttribute('aria-pressed', 'true');
+      for (const secret of ['neg', 'zero', 'pos']) {
+        await page.locator(`[data-action="walk-${secret}"]`).click();
+        await expect(page.locator(`[data-action="walk-${secret}"]`)).toHaveAttribute('aria-pressed', 'true');
+        await expectNoHorizontalOverflow(page, `380px / ${platform} / s=${secret}`);
+      }
+    }
+  });
+
+  test('no horizontal page scroll after a full attack run', async ({ page }) => {
+    test.slow();
+    await page.goto('.');
+    await page.locator('[data-action="next-measurement"]').click();
+    await page.locator('[data-action="toggle-distribution"]').click();
+    await expect(page.locator('.histogram')).toHaveCount(1);
+    await expectNoHorizontalOverflow(page, '380px / distribution shown');
+
+    await page.locator('[data-action="speed-16"]').click();
+    await page.locator('[data-action="mode-vulnerable"]').click();
+    await page.getByRole('button', { name: 'Launch KyberSlash attack' }).click();
+    await expect(page.locator('#exhibit-3')).toHaveAttribute('aria-busy', 'false', { timeout: 120_000 });
+    await expect(page.locator('.match-pill')).toHaveClass(/match-pill--total/);
+    await revealEverything(page);
+    await expectNoHorizontalOverflow(page, '380px / attack complete, everything revealed');
+  });
+});

@@ -493,6 +493,9 @@
 
 /* Truth table */
 .truth-panel { margin-top: 16px; }
+/* The table's min-content width exceeds a phone's panel; scroll it here
+   rather than let it push the whole page sideways. */
+.truth-scroll { overflow-x: auto; }
 .truth-table {
   width: 100%;
   border-collapse: collapse;

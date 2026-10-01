@@ -1456,13 +1456,15 @@ function renderProbeWalkthrough(): string {
         ${probeCard(w.high, `t=${formatInteger(w.high.probe)} reaches it when s is 0 or +1`)}
       </div>
       <div class="truth-panel">
-        <table class="truth-table">
-          <caption class="sr-only">Truth table mapping each secret value to its fast/slow timing pair</caption>
-          <thead>
-            <tr><th scope="col">secret</th><th scope="col">t=${formatInteger(w.low.probe)}</th><th scope="col">t=${formatInteger(w.high.probe)}</th><th scope="col"></th></tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+        <div class="truth-scroll" tabindex="0" role="region" aria-label="Truth table: secret value to timing pair">
+          <table class="truth-table">
+            <caption class="sr-only">Truth table mapping each secret value to its fast/slow timing pair</caption>
+            <thead>
+              <tr><th scope="col">secret</th><th scope="col">t=${formatInteger(w.low.probe)}</th><th scope="col">t=${formatInteger(w.high.probe)}</th><th scope="col"></th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
         <p class="truth-result" role="status">Timing pair <strong>(${w.low.slow ? 'slow' : 'fast'}, ${w.high.slow ? 'slow' : 'fast'})</strong> is unique to <strong>s = ${signLabel(w.inferred)}</strong> — the coefficient is recovered without ever reading the key.</p>
       </div>
       <p class="walkthrough-note">Simplification worth naming: the paper&rsquo;s own Raspberry Pi 2 demo does not use adjacent probes. It <em>scales</em> the secret coefficient by an attacker-chosen multiplier <code>û</code> (§5.1.2 works through <code>û = 72</code>, then notes that &minus;72 and 107 pick out the other values) so a single secret value swings the numerator clean across that target&rsquo;s 3,329 step, and a handful of <code>û</code> values separate Kyber512&rsquo;s full &minus;3&hellip;+3 range. This lab uses <code>û = 1</code> and two adjacent probes instead — the same mechanism with the bookkeeping stripped out, which is why the secret here is a reduced three-value toy rather than a conformant ML-KEM key.</p>

@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { expectNoHorizontalOverflow } from './reflow';
+import { auditControlNames, formatControlNameFailures } from './control-names';
 
 /**
  * WCAG regression gate. Deploys are already gated on the timing-model verify
@@ -116,6 +117,14 @@ async function scan(page: Page): Promise<void> {
     nodes: v.nodes.map((n) => n.target.join(' ')).slice(0, 5),
   }));
   expect(summary).toEqual([]);
+
+  // axe's `label` rule accepts a bare `placeholder` as an accessible name, so a
+  // deleted label can leave this gate green. See `control-names.ts`.
+  expect(
+    formatControlNameFailures(await auditControlNames(page)),
+    'form controls named only by placeholder/title'
+  ).toEqual([]);
+
   await checkGradientContrast(page);
 }
 

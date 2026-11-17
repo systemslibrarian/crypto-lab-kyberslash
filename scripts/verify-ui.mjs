@@ -3,8 +3,84 @@
 //   PREVIEW_URL=http://localhost:4174/crypto-lab-kyberslash/ npm run verify:ui
 // Requires playwright + chromium (npx playwright install chromium).
 import { chromium } from 'playwright';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const BASE = process.env.PREVIEW_URL ?? 'http://localhost:4705/crypto-lab-kyberslash/';
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/* Own the server this suite tests.
+ *
+ * The default was http://localhost:4705/, with a preview assumed to be serving
+ * it already and no check of whose server answered. The fleet registry
+ * (crypto-lab/tools/playwright-ports.json) assigns 4705 to no lab; this lab's
+ * port is 4661. A port held by another project answers the goto, and every
+ * check after it then describes someone else's page.
+ *
+ * PREVIEW_URL still points this at an already-running server; CI does that.
+ * With it unset this builds if needed, starts its own preview on 4661 with
+ * --strictPort -- which refuses to move, so a collision fails loudly here --
+ * and stops it by its own pid, never by pattern.
+ */
+const OWN_PORT = 4661;
+const BASE = process.env.PREVIEW_URL ?? `http://localhost:${OWN_PORT}/crypto-lab-kyberslash/`;
+let ownServer = null;
+
+async function reachable(u) {
+  try {
+    return (await fetch(u, { redirect: 'follow' })).ok;
+  } catch {
+    return false;
+  }
+}
+
+async function startOwnServer() {
+  if (!existsSync(join(REPO_ROOT, 'dist', 'index.html'))) {
+    const built = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    if (built.status !== 0) {
+      console.error('FAIL: could not build before starting the preview server');
+      console.error((built.stdout ?? '') + (built.stderr ?? ''));
+      process.exit(1);
+    }
+  }
+  const child = spawn('npm', ['run', 'preview', '--', '--port', String(OWN_PORT), '--strictPort'], {
+    cwd: REPO_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let log = '';
+  child.stdout.on('data', (d) => (log += d));
+  child.stderr.on('data', (d) => (log += d));
+  for (let i = 0; i < 60; i++) {
+    if (await reachable(BASE)) return child;
+    if (child.exitCode !== null) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  console.error(`FAIL: preview did not come up on port ${OWN_PORT} within 30s.`);
+  console.error('      --strictPort does not move, so this is a port collision or a build fault:');
+  console.error(log.trim() || '      (the server printed nothing)');
+  try {
+    if (child.exitCode === null) process.kill(child.pid);
+  } catch {
+    /* already gone */
+  }
+  process.exit(1);
+}
+
+/* By pid, and only the child this process started -- never by pattern. */
+function stopOwnServer() {
+  if (ownServer?.exitCode === null) {
+    try {
+      process.kill(ownServer.pid);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+if (!process.env.PREVIEW_URL) ownServer = await startOwnServer();
+
+
 const results = [];
 const ok = (label, cond, detail = '') => {
   results.push({ label, pass: !!cond, detail });
@@ -88,5 +164,7 @@ ok('no uncaught page errors', pageErrors.length === 0, pageErrors.slice(0, 3).jo
 await browser.close();
 
 const failed = results.filter((r) => !r.pass);
+stopOwnServer();
+
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 process.exit(failed.length === 0 ? 0 : 1);

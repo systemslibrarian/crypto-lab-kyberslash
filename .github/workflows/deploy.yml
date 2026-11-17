@@ -69,15 +69,18 @@ jobs:
 
       - name: UI smoke and interaction checks
         run: |
-          npm run preview -- --port 4705 --strictPort &
+          npm run preview -- --port 4661 --strictPort &
           SERVER_PID=$!
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:4705/crypto-lab-kyberslash/ >/dev/null; then
+            if curl -sf http://localhost:4661/crypto-lab-kyberslash/ >/dev/null; then
               echo "preview is up"
               break
             fi
             sleep 1
           done
+          # The scripts start their own preview when PREVIEW_URL is unset; one
+          # is already running here, so point them at it explicitly.
+          export PREVIEW_URL=http://localhost:4661/crypto-lab-kyberslash/
           npm run verify:ui
           npm run verify:ui:interactions
           kill "$SERVER_PID" 2>/dev/null || true

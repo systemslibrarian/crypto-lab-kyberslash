@@ -67,23 +67,21 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      # Each script owns and stops its own preview on 4661 with --strictPort.
+      # This step used to start one here and kill it on the last line, which
+      # leaked the port two ways: `shell: bash -e` aborts the step on a failing
+      # check, so the kill was never reached; and `kill $SERVER_PID` signals the
+      # `npm run preview` WRAPPER while vite keeps listening. Either way the
+      # accessibility gate below then started Playwright's own webServer on the
+      # same port, with --strictPort and reuseExistingServer false in CI, and
+      # refused in half a second with "is already used" -- and job cleanup
+      # reported "Terminate orphan process: pid (...) (node)". The scripts now
+      # stop the process GROUP in a finally and on SIGINT/SIGTERM, so the one
+      # mechanism that owns the port is the one CI exercises.
       - name: UI smoke and interaction checks
         run: |
-          npm run preview -- --port 4661 --strictPort &
-          SERVER_PID=$!
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:4661/crypto-lab-kyberslash/ >/dev/null; then
-              echo "preview is up"
-              break
-            fi
-            sleep 1
-          done
-          # The scripts start their own preview when PREVIEW_URL is unset; one
-          # is already running here, so point them at it explicitly.
-          export PREVIEW_URL=http://localhost:4661/crypto-lab-kyberslash/
           npm run verify:ui
           npm run verify:ui:interactions
-          kill "$SERVER_PID" 2>/dev/null || true
 
       - name: Accessibility gate (axe-core, WCAG A/AA)
         run: npm run test:a11y

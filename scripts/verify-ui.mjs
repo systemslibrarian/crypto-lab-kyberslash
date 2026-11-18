@@ -44,10 +44,21 @@ async function startOwnServer() {
       process.exit(1);
     }
   }
+  /* `detached` makes the child a process-GROUP leader, which is the whole
+     point: `npm run preview` is a wrapper that execs vite, so signalling the
+     npm pid alone leaves vite holding the port. See stopOwnServer. */
   const child = spawn('npm', ['run', 'preview', '--', '--port', String(OWN_PORT), '--strictPort'], {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   });
+  /* Published BEFORE the readiness wait, not on return.
+     `ownServer = await startOwnServer()` only assigns once this function
+     returns, and it does not return until the server answers or 30s pass -- so
+     a SIGTERM inside that window found `ownServer` still null and the handler
+     had nothing to kill. Measured: one such run left `vite preview --port 4661
+     --strictPort` reparented to launchd, and the next run could not bind. */
+  ownServer = child;
   let log = '';
   child.stdout.on('data', (d) => (log += d));
   child.stderr.on('data', (d) => (log += d));
@@ -60,25 +71,51 @@ async function startOwnServer() {
   console.error('      --strictPort does not move, so this is a port collision or a build fault:');
   console.error(log.trim() || '      (the server printed nothing)');
   try {
-    if (child.exitCode === null) process.kill(child.pid);
+    if (child.exitCode === null) process.kill(-child.pid, 'SIGTERM');
   } catch {
     /* already gone */
   }
   process.exit(1);
 }
 
-/* By pid, and only the child this process started -- never by pattern. */
+/* By pid, and only the child this process started -- never by pattern.
+ *
+ * The GROUP, not the pid alone. `npm run preview` is a wrapper around vite, so
+ * `process.kill(pid)` reaps npm and leaves vite listening on 4661. That is how
+ * this lab's gate broke: the a11y step that runs next starts Playwright's own
+ * webServer on the same port with --strictPort and reuseExistingServer false
+ * in CI, so it refused with "is already used" in half a second, and the runner
+ * reported "Terminate orphan process: pid (...) (node)" at job cleanup --
+ * naming the leftover server after the step that should have stopped it.
+ *
+ * Registered on exit and on both signals, and the caller also runs it in a
+ * `finally`, because every one of those is a path the old code did not cover:
+ * the kill sat after the last check, so a failing check skipped it. */
 function stopOwnServer() {
-  if (ownServer?.exitCode === null) {
+  if (!ownServer || ownServer.exitCode !== null) return;
+  try {
+    process.kill(-ownServer.pid, 'SIGTERM');
+  } catch {
     try {
-      process.kill(ownServer.pid);
+      process.kill(ownServer.pid, 'SIGTERM');
     } catch {
       /* already gone */
     }
   }
 }
 
+process.on('exit', stopOwnServer);
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    stopOwnServer();
+    process.exit(sig === 'SIGINT' ? 130 : 143);
+  });
+}
+
 if (!process.env.PREVIEW_URL) ownServer = await startOwnServer();
+/* Everything after this point runs with a server this process owns, so it
+   runs inside a try/finally: the stop must not depend on reaching the end. */
+try {
 
 
 const results = [];
@@ -167,4 +204,7 @@ const failed = results.filter((r) => !r.pass);
 stopOwnServer();
 
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-process.exit(failed.length === 0 ? 0 : 1);
+  process.exitCode = failed.length === 0 ? 0 : 1;
+} finally {
+  stopOwnServer();
+}

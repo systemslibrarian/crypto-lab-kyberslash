@@ -1,6 +1,6 @@
 // Headless smoke test for the built lab. Run `npm run preview` first, then:
 //   npm run verify:ui            (defaults to the standard preview URL)
-//   PREVIEW_URL=http://localhost:4174/crypto-lab-kyberslash/ npm run verify:ui
+//   PREVIEW_URL=http://localhost:4661/crypto-lab-kyberslash/ npm run verify:ui
 // Requires playwright + chromium (npx playwright install chromium).
 import { chromium } from 'playwright';
 import { spawn, spawnSync } from 'node:child_process';
